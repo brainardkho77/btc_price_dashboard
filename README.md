@@ -31,6 +31,8 @@ Use `app.py` as the main file path. No API keys or secrets are required.
 
 The app ships with cached public data, precomputed latest forecasts, and precomputed backtest outputs so it can boot quickly on Community Cloud. Use the sidebar buttons only when you intentionally want to refresh data or retrain forecasts.
 
+Live forecast recomputation and live backtesting require `scikit-learn`. It is intentionally not included in the default Community Cloud requirements because the deployed dashboard uses precomputed forecasts/backtests and should boot quickly.
+
 Use `--force-refresh` to refresh cached free API data.
 
 ## What It Models

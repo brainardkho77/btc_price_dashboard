@@ -15,12 +15,12 @@ from features import (
     factor_information_coefficients,
     grouped_pressure,
 )
-from modeling import MODEL_CHOICES, equity_curves, forecast_horizons, walk_forward_backtest
 
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
+MODEL_CHOICES = ["ensemble", "hgb", "random_forest", "extra_trees", "elastic_net"]
 
 
 st.set_page_config(page_title="BTC Factor Forecast Dashboard", page_icon="BTC", layout="wide")
@@ -48,6 +48,8 @@ def cached_forecasts(raw: pd.DataFrame, model_name: str, recompute: bool = False
     if path.exists() and not recompute:
         frame = pd.read_csv(path, parse_dates=["as_of"])
         return frame
+
+    from modeling import forecast_horizons
 
     frame = forecast_horizons(raw, HORIZONS, model_name=model_name)
     frame.to_csv(path, index=False)
@@ -210,7 +212,11 @@ with st.spinner("Loading free market, macro, sentiment, and on-chain data..."):
     raw = cached_data(refresh_data)
 
 with st.spinner("Loading forecasts..."):
-    forecasts = cached_forecasts(raw, model_name, recompute_forecasts)
+    try:
+        forecasts = cached_forecasts(raw, model_name, recompute_forecasts)
+    except ImportError:
+        st.error("Live forecast recomputation requires scikit-learn. Showing the latest precomputed forecasts instead.")
+        forecasts = cached_forecasts(raw, model_name, False)
 
 selected = forecasts.loc[forecasts["horizon"] == horizon].iloc[0]
 latest_date = pd.Timestamp(selected["as_of"]).date().isoformat()
@@ -275,41 +281,46 @@ with backtest_tab:
 
     if run_backtest:
         with st.spinner("Running walk-forward fit/predict loop..."):
-            training = cached_training(raw, horizon)
-            preds, summary = walk_forward_backtest(
-                training,
-                model_name=model_name,
-                initial_train_days=initial_train_days,
-                step_days=step_days,
-                refit_every_days=refit_every_days,
-                threshold=threshold,
-                max_windows=max_windows or None,
-            )
-            preds.to_csv(OUTPUT_DIR / f"predictions_h{horizon}_{model_name}.csv")
-            curves = equity_curves(preds, threshold=threshold)
-            curves.to_csv(OUTPUT_DIR / f"equity_h{horizon}_{model_name}.csv")
-            summary_frame = pd.DataFrame([summary])
-            st.dataframe(
-                summary_frame.style.format(
-                    {
-                        "mae": "{:.4f}",
-                        "rmse": "{:.4f}",
-                        "directional_accuracy": "{:.1%}",
-                        "strategy_total_return": "{:.1%}",
-                        "buyhold_total_return": "{:.1%}",
-                        "strategy_ann_return": "{:.1%}",
-                        "buyhold_ann_return": "{:.1%}",
-                        "strategy_sharpe": "{:.2f}",
-                        "buyhold_sharpe": "{:.2f}",
-                        "strategy_max_drawdown": "{:.1%}",
-                        "buyhold_max_drawdown": "{:.1%}",
-                        "exposure": "{:.1%}",
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-            st.plotly_chart(equity_chart(curves), use_container_width=True)
+            try:
+                from modeling import equity_curves, walk_forward_backtest
+
+                training = cached_training(raw, horizon)
+                preds, summary = walk_forward_backtest(
+                    training,
+                    model_name=model_name,
+                    initial_train_days=initial_train_days,
+                    step_days=step_days,
+                    refit_every_days=refit_every_days,
+                    threshold=threshold,
+                    max_windows=max_windows or None,
+                )
+                preds.to_csv(OUTPUT_DIR / f"predictions_h{horizon}_{model_name}.csv")
+                curves = equity_curves(preds, threshold=threshold)
+                curves.to_csv(OUTPUT_DIR / f"equity_h{horizon}_{model_name}.csv")
+                summary_frame = pd.DataFrame([summary])
+                st.dataframe(
+                    summary_frame.style.format(
+                        {
+                            "mae": "{:.4f}",
+                            "rmse": "{:.4f}",
+                            "directional_accuracy": "{:.1%}",
+                            "strategy_total_return": "{:.1%}",
+                            "buyhold_total_return": "{:.1%}",
+                            "strategy_ann_return": "{:.1%}",
+                            "buyhold_ann_return": "{:.1%}",
+                            "strategy_sharpe": "{:.2f}",
+                            "buyhold_sharpe": "{:.2f}",
+                            "strategy_max_drawdown": "{:.1%}",
+                            "buyhold_max_drawdown": "{:.1%}",
+                            "exposure": "{:.1%}",
+                        }
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.plotly_chart(equity_chart(curves), use_container_width=True)
+            except ImportError:
+                st.error("Live backtesting requires scikit-learn. The deployed app shows precomputed backtests to keep Streamlit Cloud startup lightweight.")
     else:
         if not disk_summary.empty:
             st.caption("Showing the latest precomputed CLI summary from the local outputs folder.")

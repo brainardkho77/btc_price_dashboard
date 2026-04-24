@@ -118,6 +118,10 @@ def fetch_with_cache(
     max_age_hours: float = 12,
 ) -> pd.DataFrame:
     path = _cache_path(name)
+    if not force:
+        cached = _read_cached(name)
+        if cached is not None and not cached.empty:
+            return cached
     if not force and _is_fresh(path, max_age_hours):
         cached = _read_cached(name)
         if cached is not None and not cached.empty:

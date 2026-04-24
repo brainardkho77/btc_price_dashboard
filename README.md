@@ -29,6 +29,8 @@ python run_backtest.py --horizons all --model ensemble
 
 Use `app.py` as the main file path. No API keys or secrets are required.
 
+The app ships with cached public data, precomputed latest forecasts, and precomputed backtest outputs so it can boot quickly on Community Cloud. Use the sidebar buttons only when you intentionally want to refresh data or retrain forecasts.
+
 Use `--force-refresh` to refresh cached free API data.
 
 ## What It Models

@@ -43,8 +43,15 @@ def cached_data(force_refresh: bool) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
-def cached_forecasts(raw: pd.DataFrame, model_name: str) -> pd.DataFrame:
-    return forecast_horizons(raw, HORIZONS, model_name=model_name)
+def cached_forecasts(raw: pd.DataFrame, model_name: str, recompute: bool = False) -> pd.DataFrame:
+    path = OUTPUT_DIR / f"latest_forecasts_{model_name}.csv"
+    if path.exists() and not recompute:
+        frame = pd.read_csv(path, parse_dates=["as_of"])
+        return frame
+
+    frame = forecast_horizons(raw, HORIZONS, model_name=model_name)
+    frame.to_csv(path, index=False)
+    return frame
 
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
@@ -182,6 +189,10 @@ with st.sidebar:
     model_name = st.selectbox("Model", MODEL_CHOICES, index=0)
     horizon = st.selectbox("Forecast horizon", HORIZONS, index=2, format_func=lambda x: f"{x} days")
     refresh_data = st.checkbox("Refresh free data sources", value=False)
+    recompute_forecasts = st.button(
+        "Recompute forecasts",
+        help="Uses live cached data and retrains the selected model. This can be slow on Streamlit Community Cloud.",
+    )
     st.divider()
     initial_train_days = st.slider("Initial training window", 730, 2555, 1460, step=365)
     step_mode = st.selectbox("Backtest step", ["non-overlapping", "weekly", "daily"], index=0)
@@ -198,8 +209,8 @@ st.markdown(
 with st.spinner("Loading free market, macro, sentiment, and on-chain data..."):
     raw = cached_data(refresh_data)
 
-with st.spinner("Training latest multi-horizon forecasts..."):
-    forecasts = cached_forecasts(raw, model_name)
+with st.spinner("Loading forecasts..."):
+    forecasts = cached_forecasts(raw, model_name, recompute_forecasts)
 
 selected = forecasts.loc[forecasts["horizon"] == horizon].iloc[0]
 latest_date = pd.Timestamp(selected["as_of"]).date().isoformat()

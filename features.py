@@ -314,13 +314,13 @@ def build_training_data(raw: pd.DataFrame, horizon: int) -> TrainingData:
 
 
 def factor_information_coefficients(training: TrainingData) -> pd.DataFrame:
-    target = training.frame[training.target_col]
     rows = []
     for col in training.feature_cols:
         pair = training.frame[[col, training.target_col]].dropna()
         if len(pair) < 180:
             continue
-        corr = pair[col].corr(pair[training.target_col], method="spearman")
+        ranked = pair.rank(method="average")
+        corr = ranked[col].corr(ranked[training.target_col])
         if pd.isna(corr):
             continue
         rows.append(

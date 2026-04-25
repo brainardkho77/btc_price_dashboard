@@ -1,35 +1,27 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from data_sources import SOURCE_NOTES, cache_metadata, load_all_data, source_coverage
-from features import (
-    FACTOR_EXPLANATIONS,
-    HORIZONS,
-    build_training_data,
-    current_factor_pressure,
-    factor_information_coefficients,
-    grouped_pressure,
-)
+from schemas import REQUIRED_OUTPUT_FILES, SchemaError, validate_output_dir
 
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs"
-OUTPUT_DIR.mkdir(exist_ok=True)
-MODEL_CHOICES = ["ensemble", "hgb", "random_forest", "extra_trees", "elastic_net"]
+MISSING_MESSAGE = "Run python research_run.py --refresh first."
 
 
-st.set_page_config(page_title="BTC Factor Forecast Dashboard", page_icon="BTC", layout="wide")
+st.set_page_config(page_title="BTC Research Validity Report", page_icon="BTC", layout="wide")
 
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 1.4rem; padding-bottom: 2rem;}
-    [data-testid="stMetricValue"] {font-size: 1.55rem;}
+    .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
+    [data-testid="stMetricValue"] {font-size: 1.45rem;}
     .small-note {color: #60646c; font-size: 0.86rem;}
     </style>
     """,
@@ -37,38 +29,26 @@ st.markdown(
 )
 
 
-@st.cache_data(ttl=60 * 60, show_spinner=False)
-def cached_data(force_refresh: bool) -> pd.DataFrame:
-    return load_all_data(force=force_refresh)
+@st.cache_data(show_spinner=False)
+def load_outputs(output_dir: Path) -> dict:
+    try:
+        validate_output_dir(output_dir, REQUIRED_OUTPUT_FILES)
+    except (SchemaError, FileNotFoundError, pd.errors.EmptyDataError) as exc:
+        raise RuntimeError(f"{MISSING_MESSAGE}\n\n{exc}") from exc
 
-
-@st.cache_data(ttl=60 * 60, show_spinner=False)
-def cached_forecasts(raw: pd.DataFrame, model_name: str, recompute: bool = False) -> pd.DataFrame:
-    path = OUTPUT_DIR / f"latest_forecasts_{model_name}.csv"
-    if path.exists() and not recompute:
-        frame = pd.read_csv(path, parse_dates=["as_of"])
-        return frame
-
-    from modeling import forecast_horizons
-
-    frame = forecast_horizons(raw, HORIZONS, model_name=model_name)
-    frame.to_csv(path, index=False)
-    return frame
-
-
-@st.cache_data(ttl=60 * 60, show_spinner=False)
-def cached_training(raw: pd.DataFrame, horizon: int):
-    return build_training_data(raw, horizon)
-
-
-@st.cache_data(ttl=60 * 60, show_spinner=False)
-def cached_factor_ic(raw: pd.DataFrame, horizon: int) -> pd.DataFrame:
-    return factor_information_coefficients(build_training_data(raw, horizon))
-
-
-@st.cache_data(ttl=60 * 60, show_spinner=False)
-def cached_factor_pressure(raw: pd.DataFrame, horizon: int) -> pd.DataFrame:
-    return current_factor_pressure(build_training_data(raw, horizon))
+    data = {
+        "leaderboard": pd.read_csv(output_dir / "model_leaderboard.csv"),
+        "backtest_summary": pd.read_csv(output_dir / "backtest_summary.csv"),
+        "equity_curves": pd.read_csv(output_dir / "equity_curves.csv", parse_dates=["date"]),
+        "calibration": pd.read_csv(output_dir / "calibration_table.csv"),
+        "confidence": pd.read_csv(output_dir / "confidence_intervals.csv"),
+        "regimes": pd.read_csv(output_dir / "regime_slices.csv"),
+        "latest": pd.read_csv(output_dir / "latest_forecast.csv"),
+        "availability": pd.read_csv(output_dir / "data_availability.csv"),
+        "features": pd.read_csv(output_dir / "feature_audit.csv"),
+    }
+    data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    return data
 
 
 def fmt_pct(value: float) -> str:
@@ -83,324 +63,264 @@ def fmt_usd(value: float) -> str:
     return f"${value:,.0f}"
 
 
-def price_chart(raw: pd.DataFrame) -> go.Figure:
-    price = raw["btc_close"].dropna()
+def equity_chart(equity: pd.DataFrame, horizon: int, window_type: str, model: str) -> go.Figure:
+    frame = equity[
+        (equity["horizon"] == horizon)
+        & (equity["window_type"] == window_type)
+        & (equity["model"] == model)
+    ].sort_values("date")
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=price.index, y=price, mode="lines", name="BTC close", line=dict(width=2)))
-    for window, color in [(50, "#2f80ed"), (200, "#f2994a")]:
-        fig.add_trace(
-            go.Scatter(
-                x=price.index,
-                y=price.rolling(window).mean(),
-                mode="lines",
-                name=f"{window}d MA",
-                line=dict(width=1.2, color=color),
-            )
-        )
+    if not frame.empty:
+        fig.add_trace(go.Scatter(x=frame["date"], y=frame["equity_tc_adjusted"], name="Model after costs", mode="lines"))
+        fig.add_trace(go.Scatter(x=frame["date"], y=frame["equity_buy_hold"], name="BTC buy and hold", mode="lines"))
     fig.update_layout(
-        height=440,
-        margin=dict(l=15, r=15, t=25, b=15),
-        yaxis_title="USD",
-        hovermode="x unified",
-        legend=dict(orientation="h", y=1.02),
-    )
-    fig.update_yaxes(type="log")
-    return fig
-
-
-def forecast_chart(forecasts: pd.DataFrame) -> go.Figure:
-    frame = forecasts.sort_values("horizon")
-    colors = ["#1a7f64" if v >= 0 else "#c2410c" for v in frame["pred_return"]]
-    fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            x=frame["horizon"].astype(str) + "d",
-            y=frame["pred_return"],
-            marker_color=colors,
-            text=[fmt_pct(v) for v in frame["pred_return"]],
-            textposition="outside",
-            name="Expected return",
-        )
-    )
-    fig.update_layout(
-        height=320,
-        margin=dict(l=15, r=15, t=25, b=15),
-        yaxis_tickformat=".0%",
-        yaxis_title="Expected return",
-        showlegend=False,
-    )
-    return fig
-
-
-def backtest_summary_from_disk(model_name: str) -> pd.DataFrame:
-    path = OUTPUT_DIR / f"backtest_summary_{model_name}.csv"
-    if not path.exists():
-        return pd.DataFrame()
-    return pd.read_csv(path)
-
-
-def equity_from_disk(horizon: int, model_name: str) -> pd.DataFrame:
-    path = OUTPUT_DIR / f"equity_h{horizon}_{model_name}.csv"
-    if not path.exists():
-        return pd.DataFrame()
-    frame = pd.read_csv(path, parse_dates=["date"]).set_index("date")
-    return frame
-
-
-def equity_chart(curves: pd.DataFrame) -> go.Figure:
-    fig = go.Figure()
-    if not curves.empty:
-        fig.add_trace(go.Scatter(x=curves.index, y=curves["long_cash_signal"], mode="lines", name="Model long/cash"))
-        fig.add_trace(go.Scatter(x=curves.index, y=curves["buy_hold_same_windows"], mode="lines", name="BTC buy/hold windows"))
-    fig.update_layout(
-        height=370,
-        margin=dict(l=15, r=15, t=25, b=15),
+        height=360,
+        margin=dict(l=10, r=10, t=25, b=10),
         yaxis_title="Growth of $1",
         hovermode="x unified",
-        legend=dict(orientation="h", y=1.02),
+        legend=dict(orientation="h", y=1.05),
     )
     return fig
 
 
-def pressure_chart(pressure: pd.DataFrame) -> go.Figure:
-    grouped = grouped_pressure(pressure)
+def calibration_chart(calibration: pd.DataFrame, horizon: int, window_type: str, model: str) -> go.Figure:
+    frame = calibration[
+        (calibration["horizon"] == horizon)
+        & (calibration["window_type"] == window_type)
+        & (calibration["model"] == model)
+        & (calibration["sample_count"] > 0)
+    ].copy()
     fig = go.Figure()
-    if not grouped.empty:
-        colors = ["#1a7f64" if v >= 0 else "#c2410c" for v in grouped["pressure"]]
+    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], name="Perfect calibration", mode="lines", line=dict(dash="dash")))
+    if not frame.empty:
         fig.add_trace(
-            go.Bar(
-                y=grouped["group"],
-                x=grouped["pressure"],
-                orientation="h",
-                marker_color=colors,
-                name="Current pressure",
+            go.Scatter(
+                x=frame["avg_predicted_prob"],
+                y=frame["actual_up_rate"],
+                mode="markers+lines",
+                name=model,
+                marker=dict(size=10),
             )
         )
     fig.update_layout(
         height=330,
-        margin=dict(l=15, r=15, t=25, b=15),
-        xaxis_title="IC-weighted current z-score",
-        yaxis=dict(autorange="reversed"),
-        showlegend=False,
+        margin=dict(l=10, r=10, t=25, b=10),
+        xaxis_title="Average predicted probability",
+        yaxis_title="Actual up rate",
+        xaxis_tickformat=".0%",
+        yaxis_tickformat=".0%",
     )
     return fig
 
 
-with st.sidebar:
-    st.header("Controls")
-    model_name = st.selectbox("Model", MODEL_CHOICES, index=0)
-    horizon = st.selectbox("Forecast horizon", HORIZONS, index=2, format_func=lambda x: f"{x} days")
-    refresh_data = st.checkbox("Refresh free data sources", value=False)
-    recompute_forecasts = st.button(
-        "Recompute forecasts",
-        help="Uses live cached data and retrains the selected model. This can be slow on Streamlit Community Cloud.",
-    )
-    st.divider()
-    initial_train_days = st.slider("Initial training window", 730, 2555, 1460, step=365)
-    step_mode = st.selectbox("Backtest step", ["non-overlapping", "weekly", "daily"], index=0)
-    refit_every_days = st.slider("Refit cadence", 7, 90, 14, step=7, help="Backtest retrains at this cadence, using only past data.")
-    max_windows = st.slider("Max backtest windows", 0, 1200, 0, step=50, help="0 uses all possible windows.")
-    threshold = st.slider("Long/cash threshold", -0.05, 0.05, 0.0, step=0.005, format="%.3f")
+try:
+    outputs = load_outputs(OUTPUT_DIR)
+except RuntimeError as exc:
+    st.error(str(exc))
+    st.stop()
 
-st.title("BTC Factor Forecast Dashboard")
+leaderboard = outputs["leaderboard"]
+summary = outputs["backtest_summary"]
+latest = outputs["latest"]
+equity = outputs["equity_curves"]
+calibration = outputs["calibration"]
+confidence = outputs["confidence"]
+regimes = outputs["regimes"]
+availability = outputs["availability"]
+features = outputs["features"]
+manifest = outputs["manifest"]
+
+primary = latest.loc[latest["is_primary_objective"] == True].head(1)
+primary_row = primary.iloc[0] if not primary.empty else latest.iloc[0]
+
+st.title("BTC Research Validity Report")
 st.markdown(
-    "<span class='small-note'>Research dashboard only. Forecasts are probabilistic model outputs, not financial advice or a trading instruction.</span>",
+    "<span class='small-note'>Read-only report. All models, thresholds, calibration, and backtests are precomputed by <code>research_run.py</code>.</span>",
     unsafe_allow_html=True,
 )
 
-with st.spinner("Loading free market, macro, sentiment, and on-chain data..."):
-    raw = cached_data(refresh_data)
+top = st.columns(5)
+top[0].metric("Primary objective", "30d direction")
+top[1].metric("Selected model", str(primary_row["selected_model"]))
+top[2].metric("Signal", str(primary_row["signal"]))
+top[3].metric("Reliability", str(primary_row["reliability_label"]))
+top[4].metric("Run mode", "Quick" if manifest.get("quick_mode") else "Refresh")
 
-with st.spinner("Loading forecasts..."):
-    try:
-        forecasts = cached_forecasts(raw, model_name, recompute_forecasts)
-    except ImportError:
-        st.error("Live forecast recomputation requires scikit-learn. Showing the latest precomputed forecasts instead.")
-        forecasts = cached_forecasts(raw, model_name, False)
+forecast_cols = st.columns(4)
+forecast_cols[0].metric("BTC spot", fmt_usd(primary_row["current_price"]), str(primary_row["as_of_date"]))
+forecast_cols[1].metric("Probability up", fmt_pct(primary_row["predicted_probability_up"]))
+forecast_cols[2].metric("Expected return", fmt_pct(primary_row["expected_return"]))
+forecast_cols[3].metric("Model-implied forecast price", fmt_usd(primary_row["model_implied_forecast_price"]))
 
-selected = forecasts.loc[forecasts["horizon"] == horizon].iloc[0]
-latest_date = pd.Timestamp(selected["as_of"]).date().isoformat()
+if manifest.get("warnings"):
+    with st.expander("Research Warnings", expanded=True):
+        for warning in manifest["warnings"]:
+            st.warning(warning)
 
-cols = st.columns(5)
-cols[0].metric("BTC spot", fmt_usd(selected["current_price"]), latest_date)
-cols[1].metric(f"{horizon}d expected return", fmt_pct(selected["pred_return"]))
-cols[2].metric("Probability up", fmt_pct(selected["prob_up"]))
-cols[3].metric("Forecast price", fmt_usd(selected["forecast_price"]))
-cols[4].metric("68% range", f"{fmt_usd(selected['price_low_68'])} - {fmt_usd(selected['price_high_68'])}")
+quality_tab, forecast_tab, calibration_tab, regimes_tab, data_tab, feature_tab = st.tabs(
+    ["Model Quality", "Latest Forecast", "Calibration", "Regimes", "Data", "Features"]
+)
 
-left, right = st.columns([1.6, 1])
-with left:
-    st.plotly_chart(price_chart(raw), use_container_width=True)
-with right:
-    st.plotly_chart(forecast_chart(forecasts), use_container_width=True)
+with quality_tab:
+    st.subheader("Apples-to-Apples Leaderboard")
+    official = leaderboard[leaderboard["is_official"] == True].copy()
+    selected_horizon = st.selectbox("Horizon", [30, 90], format_func=lambda x: f"{x}d official")
+    selected_window = "official_monthly" if selected_horizon == 30 else "official_quarterly"
+    table = official[(official["horizon"] == selected_horizon) & (official["window_type"] == selected_window)].copy()
+
+    ci_acc = confidence[
+        (confidence["horizon"] == selected_horizon)
+        & (confidence["window_type"] == selected_window)
+        & (confidence["metric"] == "directional_accuracy")
+    ][["model", "ci_low", "ci_high", "permutation_p_value"]]
+    table = table.merge(ci_acc, on="model", how="left")
+    table["confidence_interval"] = table.apply(
+        lambda r: f"{fmt_pct(r['ci_low'])} - {fmt_pct(r['ci_high'])}" if pd.notna(r.get("ci_low")) else "n/a",
+        axis=1,
+    )
+    view_cols = [
+        "rank",
+        "model",
+        "sample_count",
+        "test_start",
+        "test_end",
+        "window_type",
+        "directional_accuracy",
+        "brier_score",
+        "sharpe",
+        "max_drawdown",
+        "tc_adjusted_return",
+        "confidence_interval",
+        "permutation_p_value",
+        "reliability_label",
+        "useful_model",
+        "notes",
+    ]
     st.dataframe(
-        forecasts[
+        table[view_cols].style.format(
+            {
+                "directional_accuracy": "{:.1%}",
+                "brier_score": "{:.3f}",
+                "sharpe": "{:.2f}",
+                "max_drawdown": "{:.1%}",
+                "tc_adjusted_return": "{:.1%}",
+                "permutation_p_value": "{:.3f}",
+            }
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+
+    chart_model = str(primary_row["selected_model"])
+    if chart_model == "no_valid_edge" or chart_model not in set(equity["model"]):
+        chart_model = str(table.iloc[0]["model"]) if not table.empty else ""
+    if chart_model:
+        st.plotly_chart(equity_chart(equity, selected_horizon, selected_window, chart_model), use_container_width=True)
+
+with forecast_tab:
+    st.subheader("Latest Precomputed Forecast")
+    st.dataframe(
+        latest[
             [
                 "horizon",
-                "pred_return",
-                "prob_up",
-                "forecast_price",
-                "price_low_68",
-                "price_high_68",
-                "train_rows",
-                "feature_count",
+                "selected_model",
+                "signal",
+                "predicted_probability_up",
+                "probability_confidence",
+                "expected_return",
+                "model_implied_forecast_price",
+                "reliability_label",
+                "selection_reason",
             ]
         ].style.format(
             {
-                "pred_return": "{:.1%}",
-                "prob_up": "{:.1%}",
-                "forecast_price": "${:,.0f}",
-                "price_low_68": "${:,.0f}",
-                "price_high_68": "${:,.0f}",
+                "predicted_probability_up": "{:.1%}",
+                "expected_return": "{:.1%}",
+                "model_implied_forecast_price": "${:,.0f}",
             }
         ),
-        use_container_width=True,
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption("180d is diagnostic only and never drives model selection.")
+
+with calibration_tab:
+    st.subheader("Out-of-Sample Calibration")
+    c1, c2 = st.columns([1, 1])
+    model_options = sorted(calibration["model"].unique())
+    selected_model = c1.selectbox("Model", model_options, index=model_options.index(str(primary_row["selected_model"])) if str(primary_row["selected_model"]) in model_options else 0)
+    selected_cal_horizon = c2.selectbox("Calibration horizon", [30, 90, 180], format_func=lambda x: f"{x}d")
+    selected_cal_window = {
+        30: "official_monthly",
+        90: "official_quarterly",
+        180: "diagnostic_semiannual",
+    }[selected_cal_horizon]
+    st.plotly_chart(calibration_chart(calibration, selected_cal_horizon, selected_cal_window, selected_model), use_container_width=True)
+    st.dataframe(
+        calibration[
+            (calibration["horizon"] == selected_cal_horizon)
+            & (calibration["window_type"] == selected_cal_window)
+            & (calibration["model"] == selected_model)
+        ].style.format(
+            {
+                "prob_bin_low": "{:.0%}",
+                "prob_bin_high": "{:.0%}",
+                "avg_predicted_prob": "{:.1%}",
+                "actual_up_rate": "{:.1%}",
+                "brier_score": "{:.3f}",
+                "calibration_error": "{:.3f}",
+            }
+        ),
+        width="stretch",
         hide_index=True,
     )
 
-forecast_tab, backtest_tab, factors_tab, data_tab = st.tabs(["Forecast", "Backtest", "Factors", "Data"])
-
-with forecast_tab:
-    st.subheader("Current Forecast Distribution")
-    fcols = st.columns(3)
-    fcols[0].metric("90% low", fmt_usd(selected["price_low_90"]))
-    fcols[1].metric("Median", fmt_usd(selected["forecast_price"]))
-    fcols[2].metric("90% high", fmt_usd(selected["price_high_90"]))
-    st.caption(
-        "The range uses model residual volatility from the training sample. It is a rough uncertainty band, not a guaranteed confidence interval."
+with regimes_tab:
+    st.subheader("Regime Slices")
+    st.dataframe(
+        regimes.style.format(
+            {
+                "directional_accuracy": "{:.1%}",
+                "balanced_accuracy": "{:.1%}",
+                "brier_score": "{:.3f}",
+                "calibration_error": "{:.3f}",
+                "sharpe": "{:.2f}",
+                "max_drawdown": "{:.1%}",
+                "tc_adjusted_return": "{:.1%}",
+            }
+        ),
+        width="stretch",
+        hide_index=True,
     )
-
-    st.subheader("Factors Used")
-    st.dataframe(pd.DataFrame(FACTOR_EXPLANATIONS), use_container_width=True, hide_index=True)
-
-with backtest_tab:
-    st.subheader("Walk-Forward Backtest")
-    step_days = {"non-overlapping": horizon, "weekly": 7, "daily": 1}[step_mode]
-    run_backtest = st.button("Run selected backtest", type="primary")
-    disk_summary = backtest_summary_from_disk(model_name)
-
-    if run_backtest:
-        with st.spinner("Running walk-forward fit/predict loop..."):
-            try:
-                from modeling import equity_curves, walk_forward_backtest
-
-                training = cached_training(raw, horizon)
-                preds, summary = walk_forward_backtest(
-                    training,
-                    model_name=model_name,
-                    initial_train_days=initial_train_days,
-                    step_days=step_days,
-                    refit_every_days=refit_every_days,
-                    threshold=threshold,
-                    max_windows=max_windows or None,
-                )
-                preds.to_csv(OUTPUT_DIR / f"predictions_h{horizon}_{model_name}.csv")
-                curves = equity_curves(preds, threshold=threshold)
-                curves.to_csv(OUTPUT_DIR / f"equity_h{horizon}_{model_name}.csv")
-                summary_frame = pd.DataFrame([summary])
-                st.dataframe(
-                    summary_frame.style.format(
-                        {
-                            "mae": "{:.4f}",
-                            "rmse": "{:.4f}",
-                            "directional_accuracy": "{:.1%}",
-                            "strategy_total_return": "{:.1%}",
-                            "buyhold_total_return": "{:.1%}",
-                            "strategy_ann_return": "{:.1%}",
-                            "buyhold_ann_return": "{:.1%}",
-                            "strategy_sharpe": "{:.2f}",
-                            "buyhold_sharpe": "{:.2f}",
-                            "strategy_max_drawdown": "{:.1%}",
-                            "buyhold_max_drawdown": "{:.1%}",
-                            "exposure": "{:.1%}",
-                        }
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-                st.plotly_chart(equity_chart(curves), use_container_width=True)
-            except ImportError:
-                st.error("Live backtesting requires scikit-learn. The deployed app shows precomputed backtests to keep Streamlit Cloud startup lightweight.")
-    else:
-        if not disk_summary.empty:
-            st.caption("Showing the latest precomputed CLI summary from the local outputs folder.")
-            st.dataframe(
-                disk_summary.style.format(
-                    {
-                        "mae": "{:.4f}",
-                        "rmse": "{:.4f}",
-                        "directional_accuracy": "{:.1%}",
-                        "strategy_total_return": "{:.1%}",
-                        "buyhold_total_return": "{:.1%}",
-                        "strategy_ann_return": "{:.1%}",
-                        "buyhold_ann_return": "{:.1%}",
-                        "strategy_sharpe": "{:.2f}",
-                        "buyhold_sharpe": "{:.2f}",
-                        "strategy_max_drawdown": "{:.1%}",
-                        "buyhold_max_drawdown": "{:.1%}",
-                        "exposure": "{:.1%}",
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-            curves = equity_from_disk(horizon, model_name)
-            st.plotly_chart(equity_chart(curves), use_container_width=True)
-        else:
-            st.info("Run a selected backtest here, or run `python run_backtest.py --horizons all` from this folder.")
-
-with factors_tab:
-    st.subheader(f"{horizon}d Factor Signals")
-    pressure = cached_factor_pressure(raw, horizon)
-    ic = cached_factor_ic(raw, horizon)
-    pc_left, pc_right = st.columns([1, 1])
-    with pc_left:
-        st.plotly_chart(pressure_chart(pressure), use_container_width=True)
-    with pc_right:
-        if not pressure.empty:
-            st.dataframe(
-                pressure.head(20).style.format(
-                    {
-                        "latest_z": "{:.2f}",
-                        "pressure": "{:.3f}",
-                        "spearman_ic": "{:.3f}",
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    st.subheader("Historical Factor IC")
-    pos = ic.sort_values("spearman_ic", ascending=False).head(15)
-    neg = ic.sort_values("spearman_ic", ascending=True).head(15)
-    ic_cols = st.columns(2)
-    ic_cols[0].dataframe(pos.style.format({"spearman_ic": "{:.3f}", "abs_ic": "{:.3f}"}), use_container_width=True, hide_index=True)
-    ic_cols[1].dataframe(neg.style.format({"spearman_ic": "{:.3f}", "abs_ic": "{:.3f}"}), use_container_width=True, hide_index=True)
 
 with data_tab:
-    st.subheader("Data Sources")
+    st.subheader("Data Availability")
+    status_counts = availability["status"].value_counts().rename_axis("status").reset_index(name="count")
+    st.dataframe(status_counts, width="stretch", hide_index=True)
+    st.dataframe(availability, width="stretch", hide_index=True)
+
+    st.subheader("Run Manifest")
+    manifest_view = pd.DataFrame(
+        [
+            {"field": "run_id", "value": manifest.get("run_id", "")},
+            {"field": "created_at", "value": manifest.get("created_at", "")},
+            {"field": "git_commit", "value": manifest.get("git_commit", "")},
+            {"field": "start_date", "value": manifest.get("start_date", "")},
+            {"field": "end_date", "value": manifest.get("end_date", "")},
+            {"field": "config_hash", "value": manifest.get("config_hash", "")},
+            {"field": "data_snapshot_hash", "value": manifest.get("data_snapshot_hash", "")},
+            {"field": "features_count", "value": str(manifest.get("features_count", ""))},
+            {"field": "models_run", "value": ", ".join(manifest.get("models_run", []))},
+        ]
+    )
+    st.dataframe(manifest_view, width="stretch", hide_index=True)
+
+with feature_tab:
+    st.subheader("Feature Audit")
+    source_filter = st.multiselect("Sources", sorted(features["source"].unique()), default=sorted(features["source"].unique()))
+    filtered = features[features["source"].isin(source_filter)]
     st.dataframe(
-        pd.DataFrame([{"source": key, "usage": value} for key, value in SOURCE_NOTES.items()]),
-        use_container_width=True,
+        filtered.style.format({"missing_pct": "{:.1%}"}),
+        width="stretch",
         hide_index=True,
     )
-    st.subheader("Coverage")
-    coverage_cols = [
-        "btc_close",
-        "eth_close",
-        "spx_close",
-        "vix_close",
-        "dxy_close",
-        "cm_mvrv",
-        "cm_active_addresses",
-        "cm_exchange_inflow_usd",
-        "fear_greed_value",
-        "us_10y_yield",
-        "trade_weighted_usd",
-        "m2_money_supply",
-    ]
-    st.dataframe(source_coverage(raw, coverage_cols), use_container_width=True, hide_index=True)
-    meta = cache_metadata()
-    if not meta.empty:
-        st.subheader("Local Cache")
-        st.dataframe(meta, use_container_width=True, hide_index=True)

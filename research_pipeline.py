@@ -32,6 +32,7 @@ from schemas import empty_output_frame, write_schema_csv
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs"
+SCHEMA_VERSION = "1.0"
 
 BASELINE_MODELS = {"buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"}
 LEAKAGE_TOKENS = ("target", "future", "forward", "label", "shifted_target", "target_shift", "future_return", "forward_return")
@@ -1678,6 +1679,7 @@ def write_manifest(
 ) -> Path:
     manifest = {
         "run_id": run_id,
+        "schema_version": SCHEMA_VERSION,
         "created_at": created_at,
         "git_commit": git_commit(),
         "python_version": sys.version.replace("\n", " "),

@@ -7,7 +7,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from schemas import REQUIRED_OUTPUT_FILES, SchemaError, validate_diagnostic_output_dir, validate_output_dir
+from schemas import (
+    REQUIRED_OUTPUT_FILES,
+    SchemaError,
+    empty_diagnostic_frame,
+    validate_frame,
+    validate_output_dir,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -33,11 +39,25 @@ st.markdown(
 def load_outputs(output_dir: Path) -> dict:
     try:
         validate_output_dir(output_dir, REQUIRED_OUTPUT_FILES)
-        validate_diagnostic_output_dir(output_dir)
     except (SchemaError, FileNotFoundError, pd.errors.EmptyDataError) as exc:
         raise RuntimeError(f"{MISSING_MESSAGE}\n\n{exc}") from exc
 
     diagnostic_dir = output_dir / "csv"
+    diagnostic_warnings = []
+
+    def read_diagnostic(filename: str) -> pd.DataFrame:
+        path = diagnostic_dir / filename
+        if not path.exists():
+            diagnostic_warnings.append(f"Missing diagnostic file: outputs/csv/{filename}")
+            return empty_diagnostic_frame(filename)
+        try:
+            frame = pd.read_csv(path)
+            validate_frame(filename, frame)
+            return frame
+        except Exception as exc:
+            diagnostic_warnings.append(f"Invalid diagnostic file outputs/csv/{filename}: {exc}")
+            return empty_diagnostic_frame(filename)
+
     data = {
         "leaderboard": pd.read_csv(output_dir / "model_leaderboard.csv"),
         "backtest_summary": pd.read_csv(output_dir / "backtest_summary.csv"),
@@ -48,13 +68,16 @@ def load_outputs(output_dir: Path) -> dict:
         "latest": pd.read_csv(output_dir / "latest_forecast.csv"),
         "availability": pd.read_csv(output_dir / "data_availability.csv"),
         "features": pd.read_csv(output_dir / "feature_audit.csv"),
-        "rejections": pd.read_csv(diagnostic_dir / "model_rejection_reasons.csv"),
-        "feature_signal": pd.read_csv(diagnostic_dir / "feature_signal_diagnostics.csv"),
-        "feature_ablation": pd.read_csv(diagnostic_dir / "feature_group_ablation.csv"),
-        "regime_breakdown": pd.read_csv(diagnostic_dir / "model_regime_breakdown.csv"),
-        "derivatives_impact": pd.read_csv(diagnostic_dir / "derivatives_impact.csv"),
+        "rejections": read_diagnostic("model_rejection_reasons.csv"),
+        "feature_signal": read_diagnostic("feature_signal_diagnostics.csv"),
+        "feature_ablation": read_diagnostic("feature_group_ablation.csv"),
+        "regime_breakdown": read_diagnostic("model_regime_breakdown.csv"),
+        "derivatives_coverage": read_diagnostic("derivatives_coverage.csv"),
+        "derivatives_impact": read_diagnostic("derivatives_impact.csv"),
+        "feature_group_stability": read_diagnostic("feature_group_stability.csv"),
     }
     data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    data["diagnostic_warnings"] = diagnostic_warnings
     return data
 
 
@@ -139,7 +162,9 @@ rejections = outputs["rejections"]
 feature_signal = outputs["feature_signal"]
 feature_ablation = outputs["feature_ablation"]
 regime_breakdown = outputs["regime_breakdown"]
+derivatives_coverage = outputs["derivatives_coverage"]
 derivatives_impact = outputs["derivatives_impact"]
+feature_group_stability = outputs["feature_group_stability"]
 manifest = outputs["manifest"]
 
 primary = latest.loc[latest["is_primary_objective"] == True].head(1)
@@ -167,6 +192,11 @@ forecast_cols[3].metric("Model-implied forecast price", fmt_usd(primary_row["mod
 if manifest.get("warnings"):
     with st.expander("Research Warnings", expanded=True):
         for warning in manifest["warnings"]:
+            st.warning(warning)
+
+if outputs.get("diagnostic_warnings"):
+    with st.expander("Diagnostic Output Warnings", expanded=False):
+        for warning in outputs["diagnostic_warnings"]:
             st.warning(warning)
 
 if str(primary_row["selected_model"]) == "no_valid_edge":
@@ -280,6 +310,7 @@ with no_edge_tab:
                 "directional_accuracy": "{:.1%}",
                 "balanced_accuracy": "{:.1%}",
                 "brier_score": "{:.3f}",
+                "calibration_error": "{:.3f}",
                 "sharpe": "{:.2f}",
                 "max_drawdown": "{:.1%}",
                 "net_return": "{:.1%}",
@@ -288,6 +319,51 @@ with no_edge_tab:
         width="stretch",
         hide_index=True,
     )
+
+    st.subheader("Feature Group Watchlist")
+    watchlist = ablation_30[
+        (ablation_30["feature_group"] == "dollar_rates_only")
+        & (ablation_30["model_name"] == "logistic_linear")
+    ]
+    if watchlist.empty:
+        st.warning("No precomputed dollar_rates_only / logistic_linear watchlist row is available.")
+    else:
+        st.dataframe(
+            watchlist.style.format(
+                {
+                    "directional_accuracy": "{:.1%}",
+                    "balanced_accuracy": "{:.1%}",
+                    "brier_score": "{:.3f}",
+                    "calibration_error": "{:.3f}",
+                    "sharpe": "{:.2f}",
+                    "max_drawdown": "{:.1%}",
+                    "net_return": "{:.1%}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.subheader("Feature Group Stability")
+    stability_30 = feature_group_stability[
+        (feature_group_stability["horizon"] == 30)
+        & (feature_group_stability["window_type"] == "official_monthly")
+    ]
+    if stability_30.empty:
+        st.warning("No precomputed feature group stability file is available.")
+    else:
+        st.dataframe(
+            stability_30.sort_values(["feature_group", "model_name", "period_slice"]).style.format(
+                {
+                    "directional_accuracy": "{:.1%}",
+                    "net_return": "{:.1%}",
+                    "sharpe": "{:.2f}",
+                    "max_drawdown": "{:.1%}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
 
 with forecast_tab:
     st.subheader("Latest Precomputed Forecast")
@@ -370,6 +446,36 @@ with data_tab:
     status_counts = availability["status"].value_counts().rename_axis("status").reset_index(name="count")
     st.dataframe(status_counts, width="stretch", hide_index=True)
     st.dataframe(availability, width="stretch", hide_index=True)
+
+    st.subheader("Derivatives Coverage")
+    if derivatives_coverage.empty:
+        st.warning("No precomputed derivatives coverage file is available.")
+    else:
+        st.dataframe(
+            derivatives_coverage.style.format({"missing_pct": "{:.1%}"}),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.subheader("Derivatives Impact")
+    if derivatives_impact.empty:
+        st.warning("No derivatives impact comparison ran because no valid derivative features entered the model feature set.")
+    else:
+        st.dataframe(
+            derivatives_impact.style.format(
+                {
+                    "directional_accuracy": "{:.1%}",
+                    "balanced_accuracy": "{:.1%}",
+                    "brier_score": "{:.3f}",
+                    "calibration_error": "{:.3f}",
+                    "sharpe": "{:.2f}",
+                    "max_drawdown": "{:.1%}",
+                    "net_return": "{:.1%}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
 
     st.subheader("Run Manifest")
     manifest_view = pd.DataFrame(

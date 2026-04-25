@@ -67,6 +67,88 @@ class FeatureBuildResult:
     released_raw: pd.DataFrame
 
 
+@dataclass(frozen=True)
+class ManualDerivativeSpec:
+    dataset: str
+    metric: str
+    filename: str
+    required_columns: Tuple[str, ...]
+    rename_map: Dict[str, str]
+    positive_columns: Tuple[str, ...] = ()
+    nonnegative_columns: Tuple[str, ...] = ()
+    bounded_columns: Tuple[Tuple[str, float, float], ...] = ()
+
+
+@dataclass
+class ManualCsvResult:
+    spec: ManualDerivativeSpec
+    status: str
+    frame: Optional[pd.DataFrame]
+    failure_reason: str
+    missing_pct: float
+
+
+MANUAL_DERIVATIVE_SPECS: Dict[str, ManualDerivativeSpec] = {
+    "binance_funding_rate": ManualDerivativeSpec(
+        dataset="binance_funding_rate",
+        metric="funding_rate",
+        filename="btc_funding.csv",
+        required_columns=("date", "funding_rate"),
+        rename_map={"funding_rate": "binance_funding_rate"},
+        bounded_columns=(("funding_rate", -1.0, 1.0),),
+    ),
+    "binance_open_interest": ManualDerivativeSpec(
+        dataset="binance_open_interest",
+        metric="open_interest",
+        filename="btc_open_interest.csv",
+        required_columns=("date", "sum_open_interest", "sum_open_interest_value"),
+        rename_map={
+            "sum_open_interest": "binance_sum_open_interest",
+            "sum_open_interest_value": "binance_sum_open_interest_value",
+        },
+        nonnegative_columns=("sum_open_interest", "sum_open_interest_value"),
+    ),
+    "binance_long_short_ratio": ManualDerivativeSpec(
+        dataset="binance_long_short_ratio",
+        metric="long_short_ratio",
+        filename="btc_long_short_ratio.csv",
+        required_columns=("date", "long_short_ratio", "long_account", "short_account"),
+        rename_map={
+            "long_short_ratio": "binance_long_short_ratio",
+            "long_account": "binance_long_account",
+            "short_account": "binance_short_account",
+        },
+        positive_columns=("long_short_ratio",),
+        bounded_columns=(("long_account", 0.0, 1.0), ("short_account", 0.0, 1.0)),
+    ),
+    "binance_taker_buy_sell_ratio": ManualDerivativeSpec(
+        dataset="binance_taker_buy_sell_ratio",
+        metric="taker_buy_sell_ratio",
+        filename="btc_taker_buy_sell_ratio.csv",
+        required_columns=("date", "taker_buy_sell_ratio", "taker_buy_volume", "taker_sell_volume"),
+        rename_map={
+            "taker_buy_sell_ratio": "binance_taker_buy_sell_ratio",
+            "taker_buy_volume": "binance_taker_buy_volume",
+            "taker_sell_volume": "binance_taker_sell_volume",
+        },
+        positive_columns=("taker_buy_sell_ratio",),
+        nonnegative_columns=("taker_buy_volume", "taker_sell_volume"),
+    ),
+    "binance_basis": ManualDerivativeSpec(
+        dataset="binance_basis",
+        metric="basis",
+        filename="btc_basis.csv",
+        required_columns=("date", "basis", "basis_rate", "annualized_basis_rate"),
+        rename_map={
+            "basis": "binance_basis",
+            "basis_rate": "binance_basis_rate",
+            "annualized_basis_rate": "binance_annualized_basis_rate",
+        },
+        bounded_columns=(("basis_rate", -1.0, 1.0), ("annualized_basis_rate", -10.0, 10.0)),
+    ),
+}
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -217,6 +299,112 @@ def _load_source(
         )
 
 
+def _load_derivative_source(
+    run_id: str,
+    generated_at: str,
+    dataset: str,
+    fetcher: Callable[[], pd.DataFrame],
+    *,
+    quick: bool,
+) -> Tuple[Optional[pd.DataFrame], List[dict]]:
+    api_spec = _source_spec(dataset)
+    manual_spec = _manual_source_spec(dataset)
+    records: List[dict] = []
+
+    cached = _read_cached_dataset(dataset)
+    if quick and cached is not None and not cached.empty:
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                api_spec,
+                "worked",
+                cached,
+                failure_reason="Loaded cached derivatives data in quick mode.",
+                used_override=True,
+            )
+        )
+        manual_result = validate_manual_derivative_dataset(dataset)
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                manual_spec,
+                manual_result.status,
+                manual_result.frame,
+                failure_reason=manual_result.failure_reason,
+                used_override=False,
+            )
+        )
+        return cached, records
+
+    if quick:
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                api_spec,
+                "skipped",
+                failure_reason="Skipped live Binance fetch in quick mode because no cache was available.",
+                used_override=False,
+            )
+        )
+        manual_result = validate_manual_derivative_dataset(dataset)
+        manual_used = manual_result.status == "worked" and manual_result.frame is not None
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                manual_spec,
+                manual_result.status,
+                manual_result.frame,
+                failure_reason=manual_result.failure_reason,
+                used_override=manual_used,
+            )
+        )
+        return (manual_result.frame if manual_used else None), records
+
+    api_frame: Optional[pd.DataFrame] = None
+    try:
+        fetched = fetcher()
+        if fetched is None or fetched.empty:
+            raise ValueError("Binance endpoint returned no rows")
+        api_frame = fetched
+        records.append(_availability_record(run_id, generated_at, api_spec, "worked", api_frame, used_override=True))
+    except Exception as exc:
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                api_spec,
+                "failed",
+                failure_reason=str(exc)[:500],
+                used_override=False,
+            )
+        )
+
+    manual_result = validate_manual_derivative_dataset(dataset)
+    manual_used = api_frame is None and manual_result.status == "worked" and manual_result.frame is not None
+    records.append(
+        _availability_record(
+            run_id,
+            generated_at,
+            manual_spec,
+            manual_result.status,
+            manual_result.frame,
+            failure_reason=manual_result.failure_reason,
+            used_override=manual_used,
+        )
+    )
+    if api_frame is not None:
+        return api_frame, records
+    if manual_used:
+        print(f"[binance] using validated manual fallback {manual_result.spec.filename}")
+        _write_cached_dataset(dataset, manual_result.frame)
+        return manual_result.frame, records
+    return None, records
+
+
 def fetch_coinbase_btc_usd(start_date: str, end_date: Optional[str]) -> pd.DataFrame:
     start = pd.Timestamp(start_date, tz="UTC")
     end = pd.Timestamp(end_date, tz="UTC") if end_date else pd.Timestamp.utcnow().tz_convert("UTC").normalize()
@@ -302,36 +490,43 @@ def fetch_defillama_stablecoins() -> pd.DataFrame:
     return _write_cached_dataset("defillama_stablecoins", frame)
 
 
-def _request_json_with_retries(endpoint: str, params: Optional[dict], *, attempts: int = 3, timeout: int = 20) -> object:
+def _request_json_with_retries(endpoint: str, params: Optional[dict], *, attempts: int = 3, timeout: int = 25) -> object:
     last_error: Optional[Exception] = None
     for attempt in range(attempts):
         try:
             response = requests.get(endpoint, params=params, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+            if response.status_code in {418, 429} and attempt < attempts - 1:
+                retry_after = response.headers.get("Retry-After")
+                sleep_seconds = float(retry_after) if retry_after and retry_after.replace(".", "", 1).isdigit() else min(15, 2 ** (attempt + 2))
+                print(f"[binance] rate limited, retrying in {sleep_seconds:.1f}s: {endpoint}")
+                time.sleep(sleep_seconds)
+                continue
             response.raise_for_status()
             return response.json()
         except Exception as exc:
             last_error = exc
             if attempt < attempts - 1:
-                sleep_seconds = min(8, 2**attempt)
+                sleep_seconds = min(15, 2 ** (attempt + 1))
                 print(f"[binance] request failed, retrying in {sleep_seconds}s: {endpoint} {exc}")
                 time.sleep(sleep_seconds)
     raise RuntimeError(str(last_error))
 
 
-def _ensure_binance_health() -> None:
+def _binance_health_message() -> str:
     global _BINANCE_HEALTH_ERROR, _BINANCE_HEALTH_OK
     if _BINANCE_HEALTH_OK:
-        return
+        return "ok"
     if _BINANCE_HEALTH_ERROR:
-        raise RuntimeError(_BINANCE_HEALTH_ERROR)
+        return _BINANCE_HEALTH_ERROR
     try:
-        payload = _request_json_with_retries("https://fapi.binance.com/fapi/v1/time", None, attempts=2, timeout=15)
+        payload = _request_json_with_retries("https://fapi.binance.com/fapi/v1/time", None, attempts=2, timeout=20)
         if not isinstance(payload, dict) or "serverTime" not in payload:
             raise RuntimeError(f"unexpected Binance health response: {payload}")
         _BINANCE_HEALTH_OK = True
+        return "ok"
     except Exception as exc:
         _BINANCE_HEALTH_ERROR = f"Binance health check failed: {exc}"
-        raise RuntimeError(_BINANCE_HEALTH_ERROR)
+        return _BINANCE_HEALTH_ERROR
 
 
 def _write_binance_raw_cache(dataset: str, params: dict, payload: object) -> None:
@@ -354,11 +549,15 @@ def _write_binance_raw_cache(dataset: str, params: dict, payload: object) -> Non
 
 
 def _fetch_binance_json(endpoint: str, params: dict, *, dataset: str) -> list:
-    _ensure_binance_health()
-    payload = _request_json_with_retries(endpoint, params, attempts=3, timeout=20)
+    health = _binance_health_message()
+    attempts = 3 if health == "ok" else 1
+    try:
+        payload = _request_json_with_retries(endpoint, params, attempts=attempts, timeout=25)
+    except Exception as exc:
+        raise RuntimeError(f"{exc}; health={health}") from exc
     _write_binance_raw_cache(dataset, params, payload)
     if isinstance(payload, dict) and payload.get("code"):
-        raise RuntimeError(payload.get("msg", payload))
+        raise RuntimeError(f"{payload.get('msg', payload)}; health={health}")
     if not isinstance(payload, list):
         raise RuntimeError(f"unexpected Binance response: {payload}")
     return payload
@@ -369,13 +568,17 @@ def _fetch_binance_chunked(
     base_params: dict,
     *,
     dataset: str,
-    start: str = "2019-01-01",
-    chunk_days: int = 90,
+    start: Optional[str] = "2019-01-01",
+    recent_days: Optional[int] = None,
+    chunk_days: int = 30,
     limit: int = 500,
 ) -> list:
     rows: List[dict] = []
-    cursor = pd.Timestamp(start, tz="UTC")
     end = pd.Timestamp.utcnow().tz_convert("UTC").normalize()
+    if recent_days is not None:
+        cursor = end - pd.Timedelta(days=recent_days)
+    else:
+        cursor = pd.Timestamp(start, tz="UTC") if start else end - pd.Timedelta(days=30)
     while cursor <= end:
         chunk_end = min(cursor + pd.Timedelta(days=chunk_days), end)
         params = {
@@ -387,48 +590,87 @@ def _fetch_binance_chunked(
         chunk = _fetch_binance_json(endpoint, params, dataset=dataset)
         rows.extend(chunk)
         cursor = chunk_end + pd.Timedelta(milliseconds=1)
-        time.sleep(0.2)
+        time.sleep(0.35)
     return rows
 
 
-def _read_manual_binance_csv(filename: str, rename_map: Dict[str, str]) -> Optional[pd.DataFrame]:
-    path = MANUAL_DATA_DIR / filename
+def validate_manual_derivative_csv(path: Path, spec: ManualDerivativeSpec) -> ManualCsvResult:
     if not path.exists():
-        return None
-    frame = pd.read_csv(path)
-    if frame.empty or "date" not in frame.columns:
-        return None
-    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-    frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
-    keep = [col for col in rename_map if col in frame.columns]
-    if not keep:
-        return None
-    out = frame[keep].rename(columns=rename_map)
-    for col in out.columns:
-        out[col] = pd.to_numeric(out[col], errors="coerce")
-    out = out.dropna(how="all")
-    return out if not out.empty else None
+        return ManualCsvResult(spec, "skipped", None, "Manual CSV file does not exist.", 1.0)
+    try:
+        frame = pd.read_csv(path)
+    except Exception as exc:
+        return ManualCsvResult(spec, "failed", None, f"Manual CSV could not be read: {exc}", 1.0)
+    missing = [col for col in spec.required_columns if col not in frame.columns]
+    if missing:
+        return ManualCsvResult(spec, "failed", None, f"Manual CSV missing required columns: {', '.join(missing)}", 1.0)
+    if frame.empty:
+        return ManualCsvResult(spec, "skipped", None, "Manual CSV is an empty template.", 1.0)
+
+    work = frame.loc[:, list(spec.required_columns)].copy()
+    parsed_dates = pd.to_datetime(work["date"], errors="coerce", utc=True)
+    if parsed_dates.isna().any():
+        return ManualCsvResult(spec, "failed", None, "Manual CSV contains unparsable dates.", 1.0)
+    normalized_dates = parsed_dates.dt.tz_localize(None).dt.normalize()
+    if normalized_dates.duplicated().any():
+        return ManualCsvResult(spec, "failed", None, "Manual CSV contains duplicate dates.", 1.0)
+    work["date"] = normalized_dates
+    work = work.sort_values("date")
+    if not work["date"].is_monotonic_increasing:
+        return ManualCsvResult(spec, "failed", None, "Manual CSV dates are not monotonic after sorting.", 1.0)
+
+    numeric_columns = [col for col in spec.required_columns if col != "date"]
+    for col in numeric_columns:
+        numeric = pd.to_numeric(work[col], errors="coerce")
+        if numeric.isna().any() and work[col].notna().any():
+            return ManualCsvResult(spec, "failed", None, f"Manual CSV column {col} contains non-numeric values.", 1.0)
+        work[col] = numeric
+
+    for col in spec.positive_columns:
+        if (work[col].dropna() <= 0).any():
+            return ManualCsvResult(spec, "failed", None, f"Manual CSV column {col} contains non-positive values.", 1.0)
+    for col in spec.nonnegative_columns:
+        if (work[col].dropna() < 0).any():
+            return ManualCsvResult(spec, "failed", None, f"Manual CSV column {col} contains negative values.", 1.0)
+    for col, low, high in spec.bounded_columns:
+        valid = work[col].dropna()
+        if ((valid < low) | (valid > high)).any():
+            return ManualCsvResult(spec, "failed", None, f"Manual CSV column {col} has values outside [{low}, {high}].", 1.0)
+
+    out = work.set_index("date").rename(columns=spec.rename_map)
+    missing_pct = float(out.isna().mean().mean()) if not out.empty else 1.0
+    out = out.dropna(how="all").sort_index()
+    if out.empty:
+        return ManualCsvResult(spec, "skipped", None, "Manual CSV has no rows with numeric data.", missing_pct)
+    return ManualCsvResult(spec, "worked", out, "", missing_pct)
 
 
-def _manual_or_raise(filename: str, rename_map: Dict[str, str], exc: Exception) -> pd.DataFrame:
-    manual = _read_manual_binance_csv(filename, rename_map)
-    if manual is not None:
-        print(f"[binance] loaded manual fallback {filename} after API failure: {exc}")
-        return manual
-    raise exc
+def validate_manual_derivative_dataset(dataset: str) -> ManualCsvResult:
+    spec = MANUAL_DERIVATIVE_SPECS[dataset]
+    return validate_manual_derivative_csv(MANUAL_DATA_DIR / spec.filename, spec)
+
+
+def _manual_source_spec(dataset: str) -> SourceSpec:
+    spec = MANUAL_DERIVATIVE_SPECS[dataset]
+    source_spec = _source_spec(dataset)
+    return SourceSpec(
+        source="manual_csv",
+        endpoint=str(MANUAL_DATA_DIR / spec.filename),
+        dataset=dataset,
+        requested_fields=source_spec.requested_fields,
+        source_group="manual_csv",
+        is_used_in_model=False,
+    )
 
 
 def fetch_binance_funding_rate() -> pd.DataFrame:
-    try:
-        rows = _fetch_binance_chunked(
-            "https://fapi.binance.com/fapi/v1/fundingRate",
-            {"symbol": "BTCUSDT"},
-            dataset="binance_funding_rate",
-            chunk_days=60,
-            limit=1000,
-        )
-    except Exception as exc:
-        return _manual_or_raise("btc_funding.csv", {"funding_rate": "binance_funding_rate"}, exc)
+    rows = _fetch_binance_chunked(
+        "https://fapi.binance.com/fapi/v1/fundingRate",
+        {"symbol": "BTCUSDT"},
+        dataset="binance_funding_rate",
+        chunk_days=30,
+        limit=1000,
+    )
     if not rows:
         raise RuntimeError("Binance funding returned no rows")
     frame = pd.DataFrame(rows)
@@ -439,23 +681,14 @@ def fetch_binance_funding_rate() -> pd.DataFrame:
 
 
 def fetch_binance_open_interest() -> pd.DataFrame:
-    try:
-        rows = _fetch_binance_chunked(
-            "https://fapi.binance.com/futures/data/openInterestHist",
-            {"symbol": "BTCUSDT", "period": "1d"},
-            dataset="binance_open_interest",
-            chunk_days=120,
-            limit=500,
-        )
-    except Exception as exc:
-        return _manual_or_raise(
-            "btc_open_interest.csv",
-            {
-                "sum_open_interest": "binance_sum_open_interest",
-                "sum_open_interest_value": "binance_sum_open_interest_value",
-            },
-            exc,
-        )
+    rows = _fetch_binance_chunked(
+        "https://fapi.binance.com/futures/data/openInterestHist",
+        {"symbol": "BTCUSDT", "period": "1d"},
+        dataset="binance_open_interest",
+        recent_days=29,
+        chunk_days=7,
+        limit=500,
+    )
     frame = pd.DataFrame(rows)
     if frame.empty:
         raise RuntimeError("Binance open interest returned no rows")
@@ -467,24 +700,14 @@ def fetch_binance_open_interest() -> pd.DataFrame:
 
 
 def fetch_binance_long_short_ratio() -> pd.DataFrame:
-    try:
-        rows = _fetch_binance_chunked(
-            "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
-            {"symbol": "BTCUSDT", "period": "1d"},
-            dataset="binance_long_short_ratio",
-            chunk_days=120,
-            limit=500,
-        )
-    except Exception as exc:
-        return _manual_or_raise(
-            "btc_long_short_ratio.csv",
-            {
-                "long_short_ratio": "binance_long_short_ratio",
-                "long_account": "binance_long_account",
-                "short_account": "binance_short_account",
-            },
-            exc,
-        )
+    rows = _fetch_binance_chunked(
+        "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
+        {"symbol": "BTCUSDT", "period": "1d"},
+        dataset="binance_long_short_ratio",
+        recent_days=29,
+        chunk_days=7,
+        limit=500,
+    )
     frame = pd.DataFrame(rows)
     if frame.empty:
         raise RuntimeError("Binance long/short returned no rows")
@@ -497,24 +720,14 @@ def fetch_binance_long_short_ratio() -> pd.DataFrame:
 
 
 def fetch_binance_taker_ratio() -> pd.DataFrame:
-    try:
-        rows = _fetch_binance_chunked(
-            "https://fapi.binance.com/futures/data/takerlongshortRatio",
-            {"symbol": "BTCUSDT", "period": "1d"},
-            dataset="binance_taker_buy_sell_ratio",
-            chunk_days=120,
-            limit=500,
-        )
-    except Exception as exc:
-        return _manual_or_raise(
-            "btc_taker_buy_sell_ratio.csv",
-            {
-                "taker_buy_sell_ratio": "binance_taker_buy_sell_ratio",
-                "taker_buy_volume": "binance_taker_buy_volume",
-                "taker_sell_volume": "binance_taker_sell_volume",
-            },
-            exc,
-        )
+    rows = _fetch_binance_chunked(
+        "https://fapi.binance.com/futures/data/takerlongshortRatio",
+        {"symbol": "BTCUSDT", "period": "1d"},
+        dataset="binance_taker_buy_sell_ratio",
+        recent_days=29,
+        chunk_days=7,
+        limit=500,
+    )
     frame = pd.DataFrame(rows)
     if frame.empty:
         raise RuntimeError("Binance taker ratio returned no rows")
@@ -527,24 +740,14 @@ def fetch_binance_taker_ratio() -> pd.DataFrame:
 
 
 def fetch_binance_basis() -> pd.DataFrame:
-    try:
-        rows = _fetch_binance_chunked(
-            "https://fapi.binance.com/futures/data/basis",
-            {"pair": "BTCUSDT", "contractType": "PERPETUAL", "period": "1d"},
-            dataset="binance_basis",
-            chunk_days=120,
-            limit=500,
-        )
-    except Exception as exc:
-        return _manual_or_raise(
-            "btc_basis.csv",
-            {
-                "basis": "binance_basis",
-                "basis_rate": "binance_basis_rate",
-                "annualized_basis_rate": "binance_annualized_basis_rate",
-            },
-            exc,
-        )
+    rows = _fetch_binance_chunked(
+        "https://fapi.binance.com/futures/data/basis",
+        {"pair": "BTCUSDT", "contractType": "PERPETUAL", "period": "1d"},
+        dataset="binance_basis",
+        recent_days=29,
+        chunk_days=7,
+        limit=500,
+    )
     frame = pd.DataFrame(rows)
     if frame.empty:
         raise RuntimeError("Binance basis returned no rows")
@@ -629,11 +832,6 @@ def load_research_data(
         ("coinmetrics_btc_daily", lambda: fetch_coinmetrics(force=refresh), True),
         ("alternative_fear_greed", lambda: fetch_fear_greed(force=refresh), True),
         ("defillama_stablecoins", fetch_defillama_stablecoins, True),
-        ("binance_funding_rate", fetch_binance_funding_rate, False),
-        ("binance_open_interest", fetch_binance_open_interest, False),
-        ("binance_long_short_ratio", fetch_binance_long_short_ratio, False),
-        ("binance_taker_buy_sell_ratio", fetch_binance_taker_ratio, False),
-        ("binance_basis", fetch_binance_basis, False),
     ]
 
     frames: List[pd.DataFrame] = [price]
@@ -650,14 +848,40 @@ def load_research_data(
         if frame is not None and not frame.empty:
             frames.append(frame)
 
+    derivative_loaders: List[Tuple[str, Callable[[], pd.DataFrame]]] = [
+        ("binance_funding_rate", fetch_binance_funding_rate),
+        ("binance_open_interest", fetch_binance_open_interest),
+        ("binance_long_short_ratio", fetch_binance_long_short_ratio),
+        ("binance_taker_buy_sell_ratio", fetch_binance_taker_ratio),
+        ("binance_basis", fetch_binance_basis),
+    ]
+    for dataset, fetcher in derivative_loaders:
+        frame, derivative_records = _load_derivative_source(
+            run_id,
+            generated_at,
+            dataset,
+            fetcher,
+            quick=quick and not refresh,
+        )
+        records.extend(derivative_records)
+        if frame is not None and not frame.empty:
+            frames.append(frame)
+
+    manual_records = [record for record in records if record["source"] == "manual_csv" and record["dataset"].startswith("binance_")]
+    if manual_records:
+        manual_status = "worked" if any(record["status"] == "worked" for record in manual_records) else "failed" if any(record["status"] == "failed" for record in manual_records) else "skipped"
+        manual_reason = "Manual derivative CSV status is recorded per metric."
+    else:
+        manual_status = "skipped"
+        manual_reason = "No manual CSV inputs were configured for this run."
     records.append(
         _availability_record(
             run_id,
             generated_at,
             _source_spec("manual_csv"),
-            "skipped",
-            failure_reason="No manual CSV inputs were configured for this run.",
-            used_override=False,
+            manual_status,
+            failure_reason=manual_reason,
+            used_override=any(record["is_used_in_model"] for record in manual_records),
         )
     )
     records.append(
@@ -1701,6 +1925,9 @@ def build_leaderboard(summary: pd.DataFrame, generated_at: str) -> pd.DataFrame:
 
 
 def select_primary_model(leaderboard: pd.DataFrame) -> Tuple[str, str, str]:
+    required = {"horizon", "window_type", "selection_eligible", "model"}
+    if leaderboard.empty or not required.issubset(set(leaderboard.columns)):
+        return "no_valid_edge", "No 30d official model beat baselines after transaction costs with sufficient reliability.", "Low confidence"
     official = leaderboard[
         (leaderboard["horizon"] == 30)
         & (leaderboard["window_type"] == "official_monthly")

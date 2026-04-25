@@ -215,7 +215,7 @@ def feature_signal_diagnostics(
     return pd.DataFrame(rows).sort_values(["horizon", "information_coefficient"], key=lambda s: s.abs() if pd.api.types.is_numeric_dtype(s) else s, ascending=False)
 
 
-def _score_feature_set(
+def _predict_feature_set(
     raw: pd.DataFrame,
     feature_result,
     feature_cols: Sequence[str],
@@ -224,13 +224,10 @@ def _score_feature_set(
     config: ResearchConfig,
     *,
     quick: bool,
-) -> Dict[str, dict]:
+) -> Dict[str, pd.DataFrame]:
     from research_pipeline import (
-        BASELINE_MODELS,
         build_target_frame,
         build_walk_forward_windows,
-        compute_metrics,
-        decorate_summary,
         predict_baseline_windows,
         predict_model_windows,
     )
@@ -254,7 +251,32 @@ def _score_feature_set(
         common_dates = preds.index if common_dates is None else common_dates.intersection(preds.index)
     if common_dates is None or len(common_dates) == 0:
         return {}
-    predictions_by_model = {model: preds.loc[common_dates].sort_index() for model, preds in predictions_by_model.items()}
+    return {model: preds.loc[common_dates].sort_index() for model, preds in predictions_by_model.items()}
+
+
+def _score_feature_set(
+    raw: pd.DataFrame,
+    feature_result,
+    feature_cols: Sequence[str],
+    horizon: int,
+    window_type: str,
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> Dict[str, dict]:
+    from research_pipeline import BASELINE_MODELS, compute_metrics, decorate_summary
+
+    predictions_by_model = _predict_feature_set(
+        raw,
+        feature_result,
+        feature_cols,
+        horizon,
+        window_type,
+        config,
+        quick=quick,
+    )
+    if not predictions_by_model:
+        return {}
 
     summaries: Dict[str, dict] = {}
     for model, preds in predictions_by_model.items():
@@ -303,6 +325,7 @@ def feature_group_ablation(
                             "directional_accuracy": np.nan,
                             "balanced_accuracy": np.nan,
                             "brier_score": np.nan,
+                            "calibration_error": np.nan,
                             "sharpe": np.nan,
                             "max_drawdown": np.nan,
                             "net_return": np.nan,
@@ -325,6 +348,7 @@ def feature_group_ablation(
                         "directional_accuracy": summary.get("directional_accuracy", np.nan),
                         "balanced_accuracy": summary.get("balanced_accuracy", np.nan),
                         "brier_score": summary.get("brier_score", np.nan),
+                        "calibration_error": summary.get("calibration_error", np.nan),
                         "sharpe": summary.get("sharpe", np.nan),
                         "max_drawdown": summary.get("max_drawdown", np.nan),
                         "net_return": summary.get("tc_adjusted_return", np.nan),
@@ -439,11 +463,155 @@ def derivatives_impact(
                         "n_features": len(cols),
                         "n_samples": int(summary.get("sample_count", 0)),
                         "directional_accuracy": summary.get("directional_accuracy", np.nan),
+                        "balanced_accuracy": summary.get("balanced_accuracy", np.nan),
                         "brier_score": summary.get("brier_score", np.nan),
+                        "calibration_error": summary.get("calibration_error", np.nan),
                         "sharpe": summary.get("sharpe", np.nan),
                         "max_drawdown": summary.get("max_drawdown", np.nan),
                         "net_return": summary.get("tc_adjusted_return", np.nan),
+                        "beats_buy_hold": bool(summary.get("beats_buy_hold_direction", False)),
+                        "beats_momentum_30d": bool(summary.get("beats_momentum_30d", False)),
+                        "beats_momentum_90d": bool(summary.get("beats_momentum_90d", False)),
                         "reliability_label": summary.get("reliability_label", "Low confidence"),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+DERIVATIVE_DATASETS = {
+    "binance_funding_rate": {
+        "metric": "funding_rate",
+        "columns": ["binance_funding_rate"],
+    },
+    "binance_open_interest": {
+        "metric": "open_interest",
+        "columns": ["binance_sum_open_interest", "binance_sum_open_interest_value"],
+    },
+    "binance_long_short_ratio": {
+        "metric": "long_short_ratio",
+        "columns": ["binance_long_short_ratio", "binance_long_account", "binance_short_account"],
+    },
+    "binance_taker_buy_sell_ratio": {
+        "metric": "taker_buy_sell_ratio",
+        "columns": ["binance_taker_buy_sell_ratio", "binance_taker_buy_volume", "binance_taker_sell_volume"],
+    },
+    "binance_basis": {
+        "metric": "basis",
+        "columns": ["binance_basis", "binance_basis_rate", "binance_annualized_basis_rate"],
+    },
+}
+
+
+def derivatives_coverage(run_id: str, raw: pd.DataFrame, feature_result, availability: pd.DataFrame) -> pd.DataFrame:
+    audit = feature_result.feature_audit
+    rows = []
+    derivative_records = availability[availability["dataset"].isin(DERIVATIVE_DATASETS)].copy()
+    if derivative_records.empty:
+        return empty_diagnostic_frame("derivatives_coverage.csv")
+    for _, record in derivative_records.iterrows():
+        dataset = str(record["dataset"])
+        spec = DERIVATIVE_DATASETS[dataset]
+        cols = [col for col in spec["columns"] if col in raw.columns]
+        raw_missing = float(raw[cols].isna().mean().mean()) if cols else 1.0
+        used = False
+        if not audit.empty and cols:
+            used = bool(audit[(audit["raw_metric"].isin(cols)) & (audit["used_in_model"] == True)].shape[0])
+        rows.append(
+            {
+                "run_id": run_id,
+                "source": record["source"],
+                "metric": spec["metric"],
+                "status": record["status"],
+                "rows": int(record.get("rows", 0)),
+                "first_date": record.get("first_date", ""),
+                "last_date": record.get("last_date", ""),
+                "missing_pct": raw_missing if str(record["status"]) == "worked" else 1.0,
+                "used_in_model": used,
+                "failure_reason": record.get("failure_reason", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _period_slice_masks(raw: pd.DataFrame, dates: pd.DatetimeIndex) -> Dict[str, pd.Series]:
+    aligned = pd.DataFrame(index=dates)
+    aligned["2015-2017"] = (dates >= pd.Timestamp("2015-01-01")) & (dates <= pd.Timestamp("2017-12-31"))
+    aligned["2018-2020"] = (dates >= pd.Timestamp("2018-01-01")) & (dates <= pd.Timestamp("2020-12-31"))
+    aligned["2021-2023"] = (dates >= pd.Timestamp("2021-01-01")) & (dates <= pd.Timestamp("2023-12-31"))
+    aligned["2024-present"] = dates >= pd.Timestamp("2024-01-01")
+    aligned["pre-ETF"] = dates < pd.Timestamp("2024-01-11")
+    aligned["post-ETF"] = dates >= pd.Timestamp("2024-01-11")
+    regimes = _regime_masks(raw, dates)
+    aligned["high-rate"] = regimes["high_rate"].to_numpy()
+    aligned["low-rate"] = regimes["low_rate"].to_numpy()
+    aligned["high-vol"] = regimes["high_volatility"].to_numpy()
+    aligned["low-vol"] = regimes["low_volatility"].to_numpy()
+    return {col: aligned[col].fillna(False) for col in aligned.columns}
+
+
+def feature_group_stability(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> pd.DataFrame:
+    from research_pipeline import compute_metrics
+
+    rows = []
+    groups = feature_group_columns(feature_result.feature_cols)
+    scoped_models = {
+        "dollar_rates_only": ["logistic_linear"],
+        "all_features": ["logistic_linear", "hgb", "random_forest"],
+        "price_momentum_only": ["momentum_30d", "momentum_90d", "random_forest"],
+    }
+    horizon = 30
+    window_type = "official_monthly"
+    for group_name, model_names in scoped_models.items():
+        group_cols = groups.get(group_name, [])
+        predictions_by_model = _predict_feature_set(raw, feature_result, group_cols, horizon, window_type, config, quick=quick)
+        for model_name in model_names:
+            preds = predictions_by_model.get(model_name)
+            masks = _period_slice_masks(raw, pd.DatetimeIndex(preds.index if preds is not None else []))
+            for period_slice, mask in masks.items():
+                if preds is None or preds.empty:
+                    part = pd.DataFrame()
+                else:
+                    part = preds.loc[mask.to_numpy()]
+                if part.empty:
+                    rows.append(
+                        {
+                            "run_id": run_id,
+                            "feature_group": group_name,
+                            "model_name": model_name,
+                            "horizon": horizon,
+                            "window_type": window_type,
+                            "period_slice": period_slice,
+                            "n_samples": 0,
+                            "directional_accuracy": np.nan,
+                            "net_return": np.nan,
+                            "sharpe": np.nan,
+                            "max_drawdown": np.nan,
+                            "reliability_label": "Low confidence",
+                        }
+                    )
+                    continue
+                metrics, _ = compute_metrics(part, horizon, window_type, config.transaction_cost_bps)
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "feature_group": group_name,
+                        "model_name": model_name,
+                        "horizon": horizon,
+                        "window_type": window_type,
+                        "period_slice": period_slice,
+                        "n_samples": int(metrics.get("sample_count", 0)),
+                        "directional_accuracy": metrics.get("directional_accuracy", np.nan),
+                        "net_return": metrics.get("tc_adjusted_return", np.nan),
+                        "sharpe": metrics.get("sharpe", np.nan),
+                        "max_drawdown": metrics.get("max_drawdown", np.nan),
+                        "reliability_label": "Low confidence",
                     }
                 )
     return pd.DataFrame(rows)
@@ -467,6 +635,15 @@ def _fmt_usd(value: object) -> str:
         return "n/a"
 
 
+def _fmt_num(value: object, digits: int = 2) -> str:
+    try:
+        if pd.isna(value):
+            return "n/a"
+        return f"{float(value):.{digits}f}"
+    except Exception:
+        return "n/a"
+
+
 def write_full_refresh_diagnostics_report(output_dir: Path, baseline_dir: Optional[Path]) -> Path:
     manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     latest = pd.read_csv(output_dir / "latest_forecast.csv")
@@ -475,6 +652,10 @@ def write_full_refresh_diagnostics_report(output_dir: Path, baseline_dir: Option
     ablation = pd.read_csv(output_dir / "csv" / "feature_group_ablation.csv")
     regimes = pd.read_csv(output_dir / "csv" / "model_regime_breakdown.csv")
     availability = pd.read_csv(output_dir / "data_availability.csv")
+    coverage_path = output_dir / "csv" / "derivatives_coverage.csv"
+    coverage = pd.read_csv(coverage_path) if coverage_path.exists() else pd.DataFrame()
+    stability_path = output_dir / "csv" / "feature_group_stability.csv"
+    stability = pd.read_csv(stability_path) if stability_path.exists() else pd.DataFrame()
     primary = latest[latest["is_primary_objective"] == True].iloc[0]
     full_30 = leaderboard[(leaderboard["horizon"] == 30) & (leaderboard["window_type"] == "official_monthly")].copy()
 
@@ -508,10 +689,19 @@ def write_full_refresh_diagnostics_report(output_dir: Path, baseline_dir: Option
 
     ablation_30 = ablation[(ablation["horizon"] == 30) & (ablation["window_type"] == "official_monthly")]
     ablation_best = ablation_30.sort_values("directional_accuracy", ascending=False).head(10)
+    watchlist = ablation_30[
+        (ablation_30["feature_group"] == "dollar_rates_only")
+        & (ablation_30["model_name"] == "logistic_linear")
+    ].head(1)
     regime_30 = regimes[(regimes["horizon"] == 30) & (regimes["window_type"] == "official_monthly")]
     regime_best = regime_30.sort_values("directional_accuracy", ascending=False).head(10)
 
     derivatives_worked = availability[availability["dataset"].str.startswith("binance_")]["status"].eq("worked").any()
+    manual_used = availability[
+        (availability["source"] == "manual_csv")
+        & (availability["dataset"].str.startswith("binance_"))
+        & (availability["is_used_in_model"] == True)
+    ]["status"].eq("worked").any()
     derivatives_impact_path = output_dir / "csv" / "derivatives_impact.csv"
     derivatives_impact_frame = pd.read_csv(derivatives_impact_path) if derivatives_impact_path.exists() else pd.DataFrame()
 
@@ -551,6 +741,20 @@ def write_full_refresh_diagnostics_report(output_dir: Path, baseline_dir: Option
             f"reliability `{row['reliability_label']}`"
         )
 
+    report.extend(["", "## Feature Group Watchlist"])
+    if watchlist.empty:
+        report.append("- `dollar_rates_only` / `logistic_linear`: unavailable in this run.")
+    else:
+        row = watchlist.iloc[0]
+        report.append(
+            f"- `dollar_rates_only` / `logistic_linear`: samples `{int(row['n_samples'])}`, "
+            f"accuracy `{_fmt_pct(row['directional_accuracy'])}`, Sharpe `{_fmt_num(row['sharpe'])}`, "
+            f"max drawdown `{_fmt_pct(row['max_drawdown'])}`, Brier `{_fmt_num(row['brier_score'], 3)}`, "
+            f"calibration error `{_fmt_num(row['calibration_error'], 3)}`, "
+            f"beats buy-hold `{bool(row['beats_buy_hold'])}`, beats momentum `{bool(row['beats_momentum'])}`."
+        )
+        report.append("- It remains diagnostic only because feature-group results are not official model-selection inputs and must prove stability across regimes first.")
+
     report.extend(
         [
             "",
@@ -569,8 +773,13 @@ def write_full_refresh_diagnostics_report(output_dir: Path, baseline_dir: Option
             "",
             "## Binance Derivatives",
             f"- Binance derivatives recovered: `{derivatives_worked}`",
+            f"- Manual derivatives used: `{manual_used}`",
         ]
     )
+    if not coverage.empty:
+        coverage_summary = coverage.groupby(["source", "status"]).size().reset_index(name="count")
+        for _, row in coverage_summary.iterrows():
+            report.append(f"- Coverage `{row['source']}` / `{row['status']}`: `{int(row['count'])}` metrics")
     if derivatives_impact_frame.empty:
         report.append("- Derivatives impact test was not run because no derivative features were available.")
     else:
@@ -579,6 +788,16 @@ def write_full_refresh_diagnostics_report(output_dir: Path, baseline_dir: Option
             f"- Best derivatives impact row: `{best_deriv['model_name']}`, derivatives included `{best_deriv['derivatives_included']}`, "
             f"accuracy `{_fmt_pct(best_deriv['directional_accuracy'])}`."
         )
+    if not stability.empty:
+        stable_rows = stability[
+            (stability["horizon"] == 30)
+            & (stability["window_type"] == "official_monthly")
+            & (stability["n_samples"] >= 8)
+            & (stability["directional_accuracy"] >= 0.55)
+            & (stability["net_return"] > 0)
+        ]
+        stable_groups = sorted(stable_rows["feature_group"].unique().tolist())
+        report.append(f"- Stable feature groups with positive 30d slices: `{', '.join(stable_groups) if stable_groups else 'none'}`")
 
     report.extend(
         [
@@ -591,6 +810,139 @@ def write_full_refresh_diagnostics_report(output_dir: Path, baseline_dir: Option
     )
 
     path = output_dir / "full_refresh_diagnostics.md"
+    path.write_text("\n".join(report) + "\n", encoding="utf-8")
+    return path
+
+
+def write_derivatives_recovery_report(output_dir: Path) -> Path:
+    manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    latest = pd.read_csv(output_dir / "latest_forecast.csv")
+    availability = pd.read_csv(output_dir / "data_availability.csv")
+    coverage = pd.read_csv(output_dir / "csv" / "derivatives_coverage.csv")
+    impact = pd.read_csv(output_dir / "csv" / "derivatives_impact.csv")
+    ablation = pd.read_csv(output_dir / "csv" / "feature_group_ablation.csv")
+    stability = pd.read_csv(output_dir / "csv" / "feature_group_stability.csv")
+    primary = latest[latest["is_primary_objective"] == True].iloc[0]
+
+    binance_recovered = availability[
+        (availability["source"] == "Binance USD-M Futures")
+        & (availability["dataset"].str.startswith("binance_"))
+    ]["status"].eq("worked").any()
+    manual_used = availability[
+        (availability["source"] == "manual_csv")
+        & (availability["dataset"].str.startswith("binance_"))
+        & (availability["is_used_in_model"] == True)
+    ]["status"].eq("worked").any()
+
+    impact_text = "No derivatives impact comparison ran because no valid derivative feature entered the model feature set."
+    derivatives_improved = False
+    if not impact.empty:
+        impact_30 = impact[(impact["horizon"] == 30) & (impact["window_type"] == "official_monthly")]
+        with_deriv = impact_30[impact_30["derivatives_included"] == True].sort_values("directional_accuracy", ascending=False).head(1)
+        without_deriv = impact_30[impact_30["derivatives_included"] == False].sort_values("directional_accuracy", ascending=False).head(1)
+        if not with_deriv.empty and not without_deriv.empty:
+            derivatives_improved = bool(with_deriv.iloc[0]["directional_accuracy"] > without_deriv.iloc[0]["directional_accuracy"])
+            impact_text = (
+                f"Best with derivatives: `{with_deriv.iloc[0]['model_name']}` at `{_fmt_pct(with_deriv.iloc[0]['directional_accuracy'])}`. "
+                f"Best without derivatives: `{without_deriv.iloc[0]['model_name']}` at `{_fmt_pct(without_deriv.iloc[0]['directional_accuracy'])}`. "
+                f"Improved directional accuracy: `{derivatives_improved}`."
+            )
+
+    ablation_30 = ablation[(ablation["horizon"] == 30) & (ablation["window_type"] == "official_monthly")]
+    top_ablation = ablation_30.sort_values("directional_accuracy", ascending=False).head(1)
+    watchlist = ablation_30[
+        (ablation_30["feature_group"] == "dollar_rates_only")
+        & (ablation_30["model_name"] == "logistic_linear")
+    ].head(1)
+    dollar_remains_strongest = (
+        not top_ablation.empty
+        and not watchlist.empty
+        and str(top_ablation.iloc[0]["feature_group"]) == "dollar_rates_only"
+        and str(top_ablation.iloc[0]["model_name"]) == "logistic_linear"
+    )
+
+    stable = stability[
+        (stability["horizon"] == 30)
+        & (stability["window_type"] == "official_monthly")
+        & (stability["n_samples"] >= 8)
+        & (stability["directional_accuracy"] >= 0.55)
+        & (stability["net_return"] > 0)
+    ]
+    stable_counts = stable.groupby(["feature_group", "model_name"]).size().reset_index(name="stable_slices") if not stable.empty else pd.DataFrame()
+    stable_counts = stable_counts.sort_values("stable_slices", ascending=False).head(5) if not stable_counts.empty else stable_counts
+
+    recommendation = "Keep no_valid_edge and prioritize validated derivative history plus feature pruning before adding more models."
+    if str(primary["selected_model"]) != "no_valid_edge":
+        recommendation = "A model passed official 30d rules; review the full leaderboard and calibration before deployment."
+    elif derivatives_improved:
+        recommendation = "Derivatives improved diagnostics but did not pass official selection; extend historical coverage before adding models."
+    elif not dollar_remains_strongest:
+        recommendation = "Feature-group leadership changed; inspect stability before pruning or expanding features."
+
+    report = [
+        "# Derivatives Recovery Report",
+        "",
+        "## Run Summary",
+        f"- Run ID: `{manifest.get('run_id')}`",
+        f"- Selected model: `{primary['selected_model']}`",
+        f"- Signal: `{primary['signal']}`",
+        f"- Reliability: `{primary['reliability_label']}`",
+        f"- no_valid_edge remains correct: `{primary['selected_model'] == 'no_valid_edge'}`",
+        "",
+        "## Derivatives Coverage",
+        f"- Binance derivatives recovered: `{binance_recovered}`",
+        f"- Manual CSV derivatives used: `{manual_used}`",
+    ]
+    if coverage.empty:
+        report.append("- No derivatives coverage rows were written.")
+    else:
+        for _, row in coverage.iterrows():
+            report.append(
+                f"- `{row['source']}` / `{row['metric']}`: `{row['status']}`, rows `{int(row['rows'])}`, "
+                f"dates `{row['first_date']}` to `{row['last_date']}`, missing `{_fmt_pct(row['missing_pct'])}`, "
+                f"used `{bool(row['used_in_model'])}`"
+            )
+
+    report.extend(
+        [
+            "",
+            "## Derivatives Impact",
+            f"- {impact_text}",
+            "",
+            "## Feature Group Watchlist",
+        ]
+    )
+    if watchlist.empty:
+        report.append("- `dollar_rates_only` / `logistic_linear`: unavailable.")
+    else:
+        row = watchlist.iloc[0]
+        report.append(
+            f"- `dollar_rates_only` / `logistic_linear`: samples `{int(row['n_samples'])}`, "
+            f"accuracy `{_fmt_pct(row['directional_accuracy'])}`, Sharpe `{_fmt_num(row['sharpe'])}`, "
+            f"drawdown `{_fmt_pct(row['max_drawdown'])}`, Brier `{_fmt_num(row['brier_score'], 3)}`, "
+            f"calibration error `{_fmt_num(row['calibration_error'], 3)}`, reliability `{row['reliability_label']}`."
+        )
+        report.append(f"- Remains strongest diagnostic group: `{dollar_remains_strongest}`")
+        report.append("- It is not selected unless it passes the official 30d selection rules in the main leaderboard.")
+
+    report.extend(["", "## Feature Group Stability"])
+    if stable_counts.empty:
+        report.append("- No feature group showed broad stable 30d slices under the diagnostic threshold.")
+    else:
+        for _, row in stable_counts.iterrows():
+            report.append(f"- `{row['feature_group']}` / `{row['model_name']}`: `{int(row['stable_slices'])}` stable slices")
+
+    report.extend(
+        [
+            "",
+            "## Conclusion",
+            f"- Derivatives improved 30d official diagnostics: `{derivatives_improved}`",
+            f"- `no_valid_edge` remains correct: `{primary['selected_model'] == 'no_valid_edge'}`",
+            f"- Recommended next step: {recommendation}",
+        ]
+    )
+
+    path = output_dir / "derivatives_recovery_report.md"
     path.write_text("\n".join(report) + "\n", encoding="utf-8")
     return path
 
@@ -618,9 +970,12 @@ def write_diagnostics(
             base_outputs["equity_curves.csv"],
             base_outputs["backtest_summary.csv"],
         ),
+        "derivatives_coverage.csv": derivatives_coverage(run_id, raw, feature_result, base_outputs["data_availability.csv"]),
         "derivatives_impact.csv": derivatives_impact(run_id, raw, feature_result, config, quick=quick),
+        "feature_group_stability.csv": feature_group_stability(run_id, raw, feature_result, config, quick=quick),
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)
     write_full_refresh_diagnostics_report(output_dir, baseline_dir)
+    write_derivatives_recovery_report(output_dir)
     return diagnostics

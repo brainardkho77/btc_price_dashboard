@@ -7,12 +7,15 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from research_config import ResearchConfig
 from research_pipeline import (
+    MANUAL_DERIVATIVE_SPECS,
     apply_release_lags,
     build_features,
     build_target_frame,
     build_walk_forward_windows,
     compute_metrics,
     select_feature_columns,
+    select_primary_model,
+    validate_manual_derivative_csv,
     window_fingerprint,
 )
 from diagnostic_outputs import feature_group_for_feature
@@ -148,9 +151,14 @@ def test_diagnostic_schemas_include_required_outputs():
         "feature_signal_diagnostics.csv",
         "feature_group_ablation.csv",
         "model_regime_breakdown.csv",
+        "derivatives_coverage.csv",
         "derivatives_impact.csv",
+        "feature_group_stability.csv",
     ]:
         assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
+    assert "balanced_accuracy" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
+    assert "calibration_error" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
+    assert "beats_momentum_90d" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
 
 
 def test_feature_group_mapping_is_stable():
@@ -161,3 +169,62 @@ def test_feature_group_mapping_is_stable():
     assert feature_group_for_feature("stablecoins_supply_chg_30d") == "stablecoins_only"
     assert feature_group_for_feature("onchain_mvrv") == "onchain_only"
     assert feature_group_for_feature("derivatives_funding_rate") == "derivatives_only"
+
+
+def test_manual_derivative_csv_validation_statuses(tmp_path):
+    spec = MANUAL_DERIVATIVE_SPECS["binance_funding_rate"]
+    valid = tmp_path / "valid.csv"
+    valid.write_text("date,funding_rate\n2024-01-01,0.0001\n2024-01-02,-0.0002\n", encoding="utf-8")
+    result = validate_manual_derivative_csv(valid, spec)
+    assert result.status == "worked"
+    assert result.frame is not None
+    assert list(result.frame.columns) == ["binance_funding_rate"]
+
+    empty = tmp_path / "empty.csv"
+    empty.write_text("date,funding_rate\n", encoding="utf-8")
+    assert validate_manual_derivative_csv(empty, spec).status == "skipped"
+
+    missing = tmp_path / "missing.csv"
+    missing.write_text("date\n2024-01-01\n", encoding="utf-8")
+    assert validate_manual_derivative_csv(missing, spec).status == "failed"
+
+    duplicate = tmp_path / "duplicate.csv"
+    duplicate.write_text("date,funding_rate\n2024-01-01,0.1\n2024-01-01,0.2\n", encoding="utf-8")
+    assert validate_manual_derivative_csv(duplicate, spec).status == "failed"
+
+    non_numeric = tmp_path / "non_numeric.csv"
+    non_numeric.write_text("date,funding_rate\n2024-01-01,abc\n", encoding="utf-8")
+    assert validate_manual_derivative_csv(non_numeric, spec).status == "failed"
+
+    impossible = tmp_path / "impossible.csv"
+    impossible.write_text("date,funding_rate\n2024-01-01,2.0\n", encoding="utf-8")
+    assert validate_manual_derivative_csv(impossible, spec).status == "failed"
+
+
+def test_derivatives_impact_uses_identical_windows():
+    config = ResearchConfig(quick_initial_train_days=365, min_feature_valid_ratio=0.40)
+    raw = synthetic_research_raw(rows=950)
+    feature_result = build_features(raw, config)
+    derivative_cols = [col for col in feature_result.feature_cols if col.startswith("derivatives_")]
+    assert derivative_cols
+    without_derivatives = [col for col in feature_result.feature_cols if col not in derivative_cols]
+
+    with_frame = build_target_frame(raw, feature_result.features, feature_result.feature_cols, 30)
+    without_frame = build_target_frame(raw, feature_result.features, without_derivatives, 30)
+    with_windows = build_walk_forward_windows(with_frame, 30, "official_monthly", config, quick=True)
+    without_windows = build_walk_forward_windows(without_frame, 30, "official_monthly", config, quick=True)
+    assert window_fingerprint(with_windows) == window_fingerprint(without_windows)
+
+
+def test_no_derivative_features_when_raw_derivatives_missing():
+    config = ResearchConfig()
+    raw = synthetic_research_raw().drop(columns=["binance_funding_rate"])
+    feature_result = build_features(raw, config)
+    assert not any(col.startswith("derivatives_") for col in feature_result.feature_cols)
+
+
+def test_no_valid_edge_selection_fallback_for_empty_leaderboard():
+    selected, reason, reliability = select_primary_model(pd.DataFrame())
+    assert selected == "no_valid_edge"
+    assert "No 30d official model" in reason
+    assert reliability == "Low confidence"

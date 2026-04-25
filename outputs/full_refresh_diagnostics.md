@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `btc_research_20260425T073548Z`
+- Full refresh run ID: `btc_research_20260425T145729Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -32,6 +32,10 @@ Validation gates failed by ML model:
 - `onchain_only` / `momentum_90d`: samples `99`, accuracy `55.6%`, net return `840.4%`, reliability `Low confidence`
 - `price_momentum_only` / `random_forest`: samples `99`, accuracy `52.5%`, net return `770.0%`, reliability `Low confidence`
 
+## Feature Group Watchlist
+- `dollar_rates_only` / `logistic_linear`: samples `99`, accuracy `57.6%`, Sharpe `0.86`, max drawdown `-55.0%`, Brier `0.236`, calibration error `0.103`, beats buy-hold `True`, beats momentum `True`.
+- It remains diagnostic only because feature-group results are not official model-selection inputs and must prove stability across regimes first.
+
 ## Regime Findings
 - `momentum_90d` in `low_volatility`: samples `65`, accuracy `66.2%`, net return `2371.9%`, reliability `Low confidence`
 - `momentum_90d` in `high_rate`: samples `65`, accuracy `63.1%`, net return `267.2%`, reliability `Low confidence`
@@ -46,7 +50,11 @@ Validation gates failed by ML model:
 
 ## Binance Derivatives
 - Binance derivatives recovered: `False`
+- Manual derivatives used: `False`
+- Coverage `Binance USD-M Futures` / `failed`: `5` metrics
+- Coverage `manual_csv` / `skipped`: `5` metrics
 - Derivatives impact test was not run because no derivative features were available.
+- Stable feature groups with positive 30d slices: `all_features, dollar_rates_only, price_momentum_only`
 
 ## Conclusion
 - The full refresh did not validate a 30d BTC directional edge.

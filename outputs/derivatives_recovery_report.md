@@ -1,0 +1,42 @@
+# Derivatives Recovery Report
+
+## Run Summary
+- Run ID: `btc_research_20260425T145729Z`
+- Selected model: `no_valid_edge`
+- Signal: `neutral`
+- Reliability: `Low confidence`
+- no_valid_edge remains correct: `True`
+
+## Derivatives Coverage
+- Binance derivatives recovered: `False`
+- Manual CSV derivatives used: `False`
+- `Binance USD-M Futures` / `funding_rate`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
+- `manual_csv` / `funding_rate`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
+- `Binance USD-M Futures` / `open_interest`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
+- `manual_csv` / `open_interest`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
+- `Binance USD-M Futures` / `long_short_ratio`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
+- `manual_csv` / `long_short_ratio`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
+- `Binance USD-M Futures` / `taker_buy_sell_ratio`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
+- `manual_csv` / `taker_buy_sell_ratio`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
+- `Binance USD-M Futures` / `basis`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
+- `manual_csv` / `basis`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
+
+## Derivatives Impact
+- No derivatives impact comparison ran because no valid derivative feature entered the model feature set.
+
+## Feature Group Watchlist
+- `dollar_rates_only` / `logistic_linear`: samples `99`, accuracy `57.6%`, Sharpe `0.86`, drawdown `-55.0%`, Brier `0.236`, calibration error `0.103`, reliability `Medium confidence`.
+- Remains strongest diagnostic group: `True`
+- It is not selected unless it passes the official 30d selection rules in the main leaderboard.
+
+## Feature Group Stability
+- `price_momentum_only` / `momentum_90d`: `6` stable slices
+- `dollar_rates_only` / `logistic_linear`: `5` stable slices
+- `price_momentum_only` / `random_forest`: `3` stable slices
+- `all_features` / `random_forest`: `2` stable slices
+- `price_momentum_only` / `momentum_30d`: `2` stable slices
+
+## Conclusion
+- Derivatives improved 30d official diagnostics: `False`
+- `no_valid_edge` remains correct: `True`
+- Recommended next step: Keep no_valid_edge and prioritize validated derivative history plus feature pruning before adding more models.

@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from research_pipeline import OUTPUT_DIR, run_research
-from schemas import REQUIRED_OUTPUT_FILES, validate_output_dir
+from schemas import REQUIRED_OUTPUT_FILES, validate_diagnostic_output_dir, validate_output_dir
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +25,7 @@ def main() -> None:
     refresh = bool(args.refresh)
     outputs = run_research(refresh=refresh, quick=quick, output_dir=output_dir)
     validate_output_dir(output_dir, REQUIRED_OUTPUT_FILES)
+    validate_diagnostic_output_dir(output_dir)
 
     latest = outputs["latest_forecast.csv"]
     leaderboard = outputs["model_leaderboard.csv"]

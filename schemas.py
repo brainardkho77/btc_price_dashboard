@@ -192,6 +192,92 @@ OUTPUT_SCHEMAS: Dict[str, List[str]] = {
     ],
 }
 
+DIAGNOSTIC_OUTPUT_SCHEMAS: Dict[str, List[str]] = {
+    "model_rejection_reasons.csv": [
+        "run_id",
+        "horizon",
+        "window_type",
+        "model_name",
+        "is_baseline",
+        "n_samples",
+        "directional_accuracy",
+        "beats_buy_hold",
+        "beats_momentum_30d",
+        "beats_momentum_90d",
+        "beats_random_baseline",
+        "passes_transaction_cost_check",
+        "passes_calibration_check",
+        "passes_sample_threshold",
+        "passes_reliability_check",
+        "final_rejection_reason",
+    ],
+    "feature_signal_diagnostics.csv": [
+        "run_id",
+        "feature_name",
+        "source",
+        "feature_group",
+        "horizon",
+        "window_type",
+        "n_samples",
+        "pearson_corr",
+        "spearman_corr",
+        "information_coefficient",
+        "ic_t_stat",
+        "ic_p_value",
+        "missing_pct",
+        "first_date",
+        "last_date",
+        "direction",
+        "notes",
+    ],
+    "feature_group_ablation.csv": [
+        "run_id",
+        "horizon",
+        "window_type",
+        "feature_group",
+        "model_name",
+        "n_features",
+        "n_samples",
+        "directional_accuracy",
+        "balanced_accuracy",
+        "brier_score",
+        "sharpe",
+        "max_drawdown",
+        "net_return",
+        "beats_buy_hold",
+        "beats_momentum",
+        "reliability_label",
+    ],
+    "model_regime_breakdown.csv": [
+        "run_id",
+        "horizon",
+        "window_type",
+        "model_name",
+        "regime",
+        "n_samples",
+        "directional_accuracy",
+        "net_return",
+        "sharpe",
+        "max_drawdown",
+        "reliability_label",
+    ],
+    "derivatives_impact.csv": [
+        "run_id",
+        "horizon",
+        "window_type",
+        "model_name",
+        "derivatives_included",
+        "n_features",
+        "n_samples",
+        "directional_accuracy",
+        "brier_score",
+        "sharpe",
+        "max_drawdown",
+        "net_return",
+        "reliability_label",
+    ],
+}
+
 REQUIRED_CSV_OUTPUTS = list(OUTPUT_SCHEMAS.keys())
 REQUIRED_OUTPUT_FILES = REQUIRED_CSV_OUTPUTS + ["run_manifest.json"]
 
@@ -207,10 +293,15 @@ def empty_output_frame(filename: str) -> pd.DataFrame:
     return pd.DataFrame(columns=OUTPUT_SCHEMAS[filename])
 
 
+def empty_diagnostic_frame(filename: str) -> pd.DataFrame:
+    return pd.DataFrame(columns=DIAGNOSTIC_OUTPUT_SCHEMAS[filename])
+
+
 def validate_frame(filename: str, frame: pd.DataFrame) -> None:
-    if filename not in OUTPUT_SCHEMAS:
+    schema = OUTPUT_SCHEMAS.get(filename) or DIAGNOSTIC_OUTPUT_SCHEMAS.get(filename)
+    if schema is None:
         raise SchemaError(f"Unknown output schema: {filename}")
-    missing = [col for col in OUTPUT_SCHEMAS[filename] if col not in frame.columns]
+    missing = [col for col in schema if col not in frame.columns]
     if missing:
         raise SchemaError(f"{filename} is missing required columns: {', '.join(missing)}")
 
@@ -227,11 +318,16 @@ def validate_frame(filename: str, frame: pd.DataFrame) -> None:
 
 def write_schema_csv(filename: str, frame: pd.DataFrame, output_dir: Path) -> Path:
     validate_frame(filename, frame)
-    ordered = frame.reindex(columns=OUTPUT_SCHEMAS[filename])
+    schema = OUTPUT_SCHEMAS.get(filename) or DIAGNOSTIC_OUTPUT_SCHEMAS[filename]
+    ordered = frame.reindex(columns=schema)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / filename
     ordered.to_csv(path, index=False)
     return path
+
+
+def write_diagnostic_csv(filename: str, frame: pd.DataFrame, output_dir: Path) -> Path:
+    return write_schema_csv(filename, frame, output_dir / "csv")
 
 
 def validate_output_file(output_dir: Path, filename: str) -> None:
@@ -245,3 +341,9 @@ def validate_output_file(output_dir: Path, filename: str) -> None:
 def validate_output_dir(output_dir: Path, required: Iterable[str] = REQUIRED_OUTPUT_FILES) -> None:
     for filename in required:
         validate_output_file(output_dir, filename)
+
+
+def validate_diagnostic_output_dir(output_dir: Path) -> None:
+    diagnostic_dir = output_dir / "csv"
+    for filename in DIAGNOSTIC_OUTPUT_SCHEMAS:
+        validate_output_file(diagnostic_dir, filename)

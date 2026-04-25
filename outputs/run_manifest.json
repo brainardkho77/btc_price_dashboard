@@ -1,10 +1,10 @@
 {
   "config_hash": "a4aee3992f1fcf1c",
-  "created_at": "2026-04-25T06:59:19+00:00",
-  "data_snapshot_hash": "d20271283a19eee5",
+  "created_at": "2026-04-25T07:35:48+00:00",
+  "data_snapshot_hash": "ae731446b385b424",
   "end_date": "2026-04-25",
   "features_count": 122,
-  "git_commit": "27a00daa7d986364224592bc5312c881f594f57a",
+  "git_commit": "d9c7da8df3194cd4c1d91ad6a5a6579dce706983",
   "models_run": [
     "buy_hold_direction",
     "momentum_30d",
@@ -25,7 +25,7 @@
   "platform": "macOS-15.1.1-arm64-arm-64bit",
   "python_version": "3.9.6 (default, Nov 11 2024, 03:15:38)  [Clang 16.0.0 (clang-1600.0.26.6)]",
   "quick_mode": false,
-  "run_id": "btc_research_20260425T065919Z",
+  "run_id": "btc_research_20260425T073548Z",
   "schema_version": "1.0",
   "start_date": "2015-01-01",
   "warnings": [

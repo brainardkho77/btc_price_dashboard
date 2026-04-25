@@ -15,6 +15,8 @@ from research_pipeline import (
     select_feature_columns,
     window_fingerprint,
 )
+from diagnostic_outputs import feature_group_for_feature
+from schemas import DIAGNOSTIC_OUTPUT_SCHEMAS
 
 
 def synthetic_research_raw(rows=1500):
@@ -138,3 +140,24 @@ def test_transaction_costs_reduce_returns_when_turnover_exists():
     metrics, returns_frame = compute_metrics(preds, 30, "official_monthly", transaction_cost_bps=25)
     assert returns_frame["tc_adjusted_strategy_return"].sum() < returns_frame["gross_strategy_return"].sum()
     assert metrics["tc_adjusted_return"] < metrics["gross_return"]
+
+
+def test_diagnostic_schemas_include_required_outputs():
+    for filename in [
+        "model_rejection_reasons.csv",
+        "feature_signal_diagnostics.csv",
+        "feature_group_ablation.csv",
+        "model_regime_breakdown.csv",
+        "derivatives_impact.csv",
+    ]:
+        assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
+
+
+def test_feature_group_mapping_is_stable():
+    assert feature_group_for_feature("momentum_ret_30d") == "price_momentum_only"
+    assert feature_group_for_feature("macro_m2_money_supply_ret_30d") == "macro_liquidity_only"
+    assert feature_group_for_feature("macro_us_10y_yield") == "dollar_rates_only"
+    assert feature_group_for_feature("cross_asset_spx_ret_30d") == "risk_assets_only"
+    assert feature_group_for_feature("stablecoins_supply_chg_30d") == "stablecoins_only"
+    assert feature_group_for_feature("onchain_mvrv") == "onchain_only"
+    assert feature_group_for_feature("derivatives_funding_rate") == "derivatives_only"

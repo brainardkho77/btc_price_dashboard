@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from schemas import REQUIRED_OUTPUT_FILES, SchemaError, validate_output_dir
+from schemas import REQUIRED_OUTPUT_FILES, SchemaError, validate_diagnostic_output_dir, validate_output_dir
 
 
 ROOT = Path(__file__).resolve().parent
@@ -33,9 +33,11 @@ st.markdown(
 def load_outputs(output_dir: Path) -> dict:
     try:
         validate_output_dir(output_dir, REQUIRED_OUTPUT_FILES)
+        validate_diagnostic_output_dir(output_dir)
     except (SchemaError, FileNotFoundError, pd.errors.EmptyDataError) as exc:
         raise RuntimeError(f"{MISSING_MESSAGE}\n\n{exc}") from exc
 
+    diagnostic_dir = output_dir / "csv"
     data = {
         "leaderboard": pd.read_csv(output_dir / "model_leaderboard.csv"),
         "backtest_summary": pd.read_csv(output_dir / "backtest_summary.csv"),
@@ -46,6 +48,11 @@ def load_outputs(output_dir: Path) -> dict:
         "latest": pd.read_csv(output_dir / "latest_forecast.csv"),
         "availability": pd.read_csv(output_dir / "data_availability.csv"),
         "features": pd.read_csv(output_dir / "feature_audit.csv"),
+        "rejections": pd.read_csv(diagnostic_dir / "model_rejection_reasons.csv"),
+        "feature_signal": pd.read_csv(diagnostic_dir / "feature_signal_diagnostics.csv"),
+        "feature_ablation": pd.read_csv(diagnostic_dir / "feature_group_ablation.csv"),
+        "regime_breakdown": pd.read_csv(diagnostic_dir / "model_regime_breakdown.csv"),
+        "derivatives_impact": pd.read_csv(diagnostic_dir / "derivatives_impact.csv"),
     }
     data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     return data
@@ -128,6 +135,11 @@ confidence = outputs["confidence"]
 regimes = outputs["regimes"]
 availability = outputs["availability"]
 features = outputs["features"]
+rejections = outputs["rejections"]
+feature_signal = outputs["feature_signal"]
+feature_ablation = outputs["feature_ablation"]
+regime_breakdown = outputs["regime_breakdown"]
+derivatives_impact = outputs["derivatives_impact"]
 manifest = outputs["manifest"]
 
 primary = latest.loc[latest["is_primary_objective"] == True].head(1)
@@ -157,8 +169,14 @@ if manifest.get("warnings"):
         for warning in manifest["warnings"]:
             st.warning(warning)
 
-quality_tab, forecast_tab, calibration_tab, regimes_tab, data_tab, feature_tab = st.tabs(
-    ["Model Quality", "Latest Forecast", "Calibration", "Regimes", "Data", "Features"]
+if str(primary_row["selected_model"]) == "no_valid_edge":
+    st.info(
+        "The full refresh did not validate a 30d BTC directional edge. "
+        "The dashboard is therefore showing a neutral signal instead of forcing a forecast."
+    )
+
+quality_tab, no_edge_tab, forecast_tab, calibration_tab, regimes_tab, data_tab, feature_tab = st.tabs(
+    ["Model Quality", "No Edge", "Latest Forecast", "Calibration", "Regimes", "Data", "Features"]
 )
 
 with quality_tab:
@@ -216,6 +234,60 @@ with quality_tab:
         chart_model = str(table.iloc[0]["model"]) if not table.empty else ""
     if chart_model:
         st.plotly_chart(equity_chart(equity, selected_horizon, selected_window, chart_model), use_container_width=True)
+
+with no_edge_tab:
+    st.subheader("No Valid Edge Diagnostics")
+    official_30 = leaderboard[(leaderboard["horizon"] == 30) & (leaderboard["window_type"] == "official_monthly")].copy()
+    baseline_models = ["buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"]
+    best_baseline = official_30[official_30["model"].isin(baseline_models)].sort_values("directional_accuracy", ascending=False).head(1)
+    best_ml = official_30[~official_30["model"].isin(baseline_models)].sort_values("directional_accuracy", ascending=False).head(1)
+    c1, c2, c3 = st.columns(3)
+    if not best_baseline.empty:
+        c1.metric("Best baseline", str(best_baseline.iloc[0]["model"]), fmt_pct(best_baseline.iloc[0]["directional_accuracy"]))
+    if not best_ml.empty:
+        c2.metric("Best ML model", str(best_ml.iloc[0]["model"]), fmt_pct(best_ml.iloc[0]["directional_accuracy"]))
+    c3.metric("Confidence", str(primary_row["reliability_label"]))
+    st.caption(str(primary_row["selection_reason"]))
+
+    rejection_30 = rejections[(rejections["horizon"] == 30) & (rejections["window_type"] == "official_monthly")].copy()
+    st.dataframe(
+        rejection_30[
+            [
+                "model_name",
+                "is_baseline",
+                "n_samples",
+                "directional_accuracy",
+                "beats_buy_hold",
+                "beats_momentum_30d",
+                "beats_momentum_90d",
+                "beats_random_baseline",
+                "passes_transaction_cost_check",
+                "passes_calibration_check",
+                "passes_sample_threshold",
+                "passes_reliability_check",
+                "final_rejection_reason",
+            ]
+        ].style.format({"directional_accuracy": "{:.1%}"}),
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.subheader("Feature Group Ablation")
+    ablation_30 = feature_ablation[(feature_ablation["horizon"] == 30) & (feature_ablation["window_type"] == "official_monthly")]
+    st.dataframe(
+        ablation_30.sort_values("directional_accuracy", ascending=False).head(25).style.format(
+            {
+                "directional_accuracy": "{:.1%}",
+                "balanced_accuracy": "{:.1%}",
+                "brier_score": "{:.3f}",
+                "sharpe": "{:.2f}",
+                "max_drawdown": "{:.1%}",
+                "net_return": "{:.1%}",
+            }
+        ),
+        width="stretch",
+        hide_index=True,
+    )
 
 with forecast_tab:
     st.subheader("Latest Precomputed Forecast")
@@ -303,6 +375,7 @@ with data_tab:
     manifest_view = pd.DataFrame(
         [
             {"field": "run_id", "value": manifest.get("run_id", "")},
+            {"field": "schema_version", "value": manifest.get("schema_version", "")},
             {"field": "created_at", "value": manifest.get("created_at", "")},
             {"field": "git_commit", "value": manifest.get("git_commit", "")},
             {"field": "start_date", "value": manifest.get("start_date", "")},

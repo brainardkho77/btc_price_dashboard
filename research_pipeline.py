@@ -32,10 +32,14 @@ from schemas import empty_output_frame, write_schema_csv
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs"
+MANUAL_DATA_DIR = ROOT / "data" / "manual"
+BINANCE_RAW_CACHE_DIR = CACHE_DIR / "binance_raw"
 SCHEMA_VERSION = "1.0"
 
 BASELINE_MODELS = {"buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"}
 LEAKAGE_TOKENS = ("target", "future", "forward", "label", "shifted_target", "target_shift", "future_return", "forward_return")
+_BINANCE_HEALTH_ERROR: Optional[str] = None
+_BINANCE_HEALTH_OK = False
 
 
 @dataclass(frozen=True)
@@ -298,22 +302,133 @@ def fetch_defillama_stablecoins() -> pd.DataFrame:
     return _write_cached_dataset("defillama_stablecoins", frame)
 
 
-def _fetch_binance_json(endpoint: str, params: dict) -> list:
-    response = requests.get(endpoint, params=params, headers={"User-Agent": USER_AGENT}, timeout=8)
-    response.raise_for_status()
-    data = response.json()
-    if isinstance(data, dict) and data.get("code"):
-        raise RuntimeError(data.get("msg", data))
-    if not isinstance(data, list):
-        raise RuntimeError(f"unexpected Binance response: {data}")
-    return data
+def _request_json_with_retries(endpoint: str, params: Optional[dict], *, attempts: int = 3, timeout: int = 20) -> object:
+    last_error: Optional[Exception] = None
+    for attempt in range(attempts):
+        try:
+            response = requests.get(endpoint, params=params, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+            if attempt < attempts - 1:
+                sleep_seconds = min(8, 2**attempt)
+                print(f"[binance] request failed, retrying in {sleep_seconds}s: {endpoint} {exc}")
+                time.sleep(sleep_seconds)
+    raise RuntimeError(str(last_error))
+
+
+def _ensure_binance_health() -> None:
+    global _BINANCE_HEALTH_ERROR, _BINANCE_HEALTH_OK
+    if _BINANCE_HEALTH_OK:
+        return
+    if _BINANCE_HEALTH_ERROR:
+        raise RuntimeError(_BINANCE_HEALTH_ERROR)
+    try:
+        payload = _request_json_with_retries("https://fapi.binance.com/fapi/v1/time", None, attempts=2, timeout=15)
+        if not isinstance(payload, dict) or "serverTime" not in payload:
+            raise RuntimeError(f"unexpected Binance health response: {payload}")
+        _BINANCE_HEALTH_OK = True
+    except Exception as exc:
+        _BINANCE_HEALTH_ERROR = f"Binance health check failed: {exc}"
+        raise RuntimeError(_BINANCE_HEALTH_ERROR)
+
+
+def _write_binance_raw_cache(dataset: str, params: dict, payload: object) -> None:
+    BINANCE_RAW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(json.dumps(params, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+    path = BINANCE_RAW_CACHE_DIR / f"{dataset}_{key}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "cached_at": utc_now_iso(),
+                "dataset": dataset,
+                "params": params,
+                "payload": payload,
+            },
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _fetch_binance_json(endpoint: str, params: dict, *, dataset: str) -> list:
+    _ensure_binance_health()
+    payload = _request_json_with_retries(endpoint, params, attempts=3, timeout=20)
+    _write_binance_raw_cache(dataset, params, payload)
+    if isinstance(payload, dict) and payload.get("code"):
+        raise RuntimeError(payload.get("msg", payload))
+    if not isinstance(payload, list):
+        raise RuntimeError(f"unexpected Binance response: {payload}")
+    return payload
+
+
+def _fetch_binance_chunked(
+    endpoint: str,
+    base_params: dict,
+    *,
+    dataset: str,
+    start: str = "2019-01-01",
+    chunk_days: int = 90,
+    limit: int = 500,
+) -> list:
+    rows: List[dict] = []
+    cursor = pd.Timestamp(start, tz="UTC")
+    end = pd.Timestamp.utcnow().tz_convert("UTC").normalize()
+    while cursor <= end:
+        chunk_end = min(cursor + pd.Timedelta(days=chunk_days), end)
+        params = {
+            **base_params,
+            "startTime": int(cursor.timestamp() * 1000),
+            "endTime": int(chunk_end.timestamp() * 1000),
+            "limit": limit,
+        }
+        chunk = _fetch_binance_json(endpoint, params, dataset=dataset)
+        rows.extend(chunk)
+        cursor = chunk_end + pd.Timedelta(milliseconds=1)
+        time.sleep(0.2)
+    return rows
+
+
+def _read_manual_binance_csv(filename: str, rename_map: Dict[str, str]) -> Optional[pd.DataFrame]:
+    path = MANUAL_DATA_DIR / filename
+    if not path.exists():
+        return None
+    frame = pd.read_csv(path)
+    if frame.empty or "date" not in frame.columns:
+        return None
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
+    keep = [col for col in rename_map if col in frame.columns]
+    if not keep:
+        return None
+    out = frame[keep].rename(columns=rename_map)
+    for col in out.columns:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out = out.dropna(how="all")
+    return out if not out.empty else None
+
+
+def _manual_or_raise(filename: str, rename_map: Dict[str, str], exc: Exception) -> pd.DataFrame:
+    manual = _read_manual_binance_csv(filename, rename_map)
+    if manual is not None:
+        print(f"[binance] loaded manual fallback {filename} after API failure: {exc}")
+        return manual
+    raise exc
 
 
 def fetch_binance_funding_rate() -> pd.DataFrame:
-    rows = _fetch_binance_json(
-        "https://fapi.binance.com/fapi/v1/fundingRate",
-        {"symbol": "BTCUSDT", "limit": 1000},
-    )
+    try:
+        rows = _fetch_binance_chunked(
+            "https://fapi.binance.com/fapi/v1/fundingRate",
+            {"symbol": "BTCUSDT"},
+            dataset="binance_funding_rate",
+            chunk_days=60,
+            limit=1000,
+        )
+    except Exception as exc:
+        return _manual_or_raise("btc_funding.csv", {"funding_rate": "binance_funding_rate"}, exc)
     if not rows:
         raise RuntimeError("Binance funding returned no rows")
     frame = pd.DataFrame(rows)
@@ -324,10 +439,23 @@ def fetch_binance_funding_rate() -> pd.DataFrame:
 
 
 def fetch_binance_open_interest() -> pd.DataFrame:
-    rows = _fetch_binance_json(
-        "https://fapi.binance.com/futures/data/openInterestHist",
-        {"symbol": "BTCUSDT", "period": "1d", "limit": 500},
-    )
+    try:
+        rows = _fetch_binance_chunked(
+            "https://fapi.binance.com/futures/data/openInterestHist",
+            {"symbol": "BTCUSDT", "period": "1d"},
+            dataset="binance_open_interest",
+            chunk_days=120,
+            limit=500,
+        )
+    except Exception as exc:
+        return _manual_or_raise(
+            "btc_open_interest.csv",
+            {
+                "sum_open_interest": "binance_sum_open_interest",
+                "sum_open_interest_value": "binance_sum_open_interest_value",
+            },
+            exc,
+        )
     frame = pd.DataFrame(rows)
     if frame.empty:
         raise RuntimeError("Binance open interest returned no rows")
@@ -339,10 +467,24 @@ def fetch_binance_open_interest() -> pd.DataFrame:
 
 
 def fetch_binance_long_short_ratio() -> pd.DataFrame:
-    rows = _fetch_binance_json(
-        "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
-        {"symbol": "BTCUSDT", "period": "1d", "limit": 500},
-    )
+    try:
+        rows = _fetch_binance_chunked(
+            "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
+            {"symbol": "BTCUSDT", "period": "1d"},
+            dataset="binance_long_short_ratio",
+            chunk_days=120,
+            limit=500,
+        )
+    except Exception as exc:
+        return _manual_or_raise(
+            "btc_long_short_ratio.csv",
+            {
+                "long_short_ratio": "binance_long_short_ratio",
+                "long_account": "binance_long_account",
+                "short_account": "binance_short_account",
+            },
+            exc,
+        )
     frame = pd.DataFrame(rows)
     if frame.empty:
         raise RuntimeError("Binance long/short returned no rows")
@@ -355,10 +497,24 @@ def fetch_binance_long_short_ratio() -> pd.DataFrame:
 
 
 def fetch_binance_taker_ratio() -> pd.DataFrame:
-    rows = _fetch_binance_json(
-        "https://fapi.binance.com/futures/data/takerlongshortRatio",
-        {"symbol": "BTCUSDT", "period": "1d", "limit": 500},
-    )
+    try:
+        rows = _fetch_binance_chunked(
+            "https://fapi.binance.com/futures/data/takerlongshortRatio",
+            {"symbol": "BTCUSDT", "period": "1d"},
+            dataset="binance_taker_buy_sell_ratio",
+            chunk_days=120,
+            limit=500,
+        )
+    except Exception as exc:
+        return _manual_or_raise(
+            "btc_taker_buy_sell_ratio.csv",
+            {
+                "taker_buy_sell_ratio": "binance_taker_buy_sell_ratio",
+                "taker_buy_volume": "binance_taker_buy_volume",
+                "taker_sell_volume": "binance_taker_sell_volume",
+            },
+            exc,
+        )
     frame = pd.DataFrame(rows)
     if frame.empty:
         raise RuntimeError("Binance taker ratio returned no rows")
@@ -371,10 +527,24 @@ def fetch_binance_taker_ratio() -> pd.DataFrame:
 
 
 def fetch_binance_basis() -> pd.DataFrame:
-    rows = _fetch_binance_json(
-        "https://fapi.binance.com/futures/data/basis",
-        {"pair": "BTCUSDT", "contractType": "PERPETUAL", "period": "1d", "limit": 500},
-    )
+    try:
+        rows = _fetch_binance_chunked(
+            "https://fapi.binance.com/futures/data/basis",
+            {"pair": "BTCUSDT", "contractType": "PERPETUAL", "period": "1d"},
+            dataset="binance_basis",
+            chunk_days=120,
+            limit=500,
+        )
+    except Exception as exc:
+        return _manual_or_raise(
+            "btc_basis.csv",
+            {
+                "basis": "binance_basis",
+                "basis_rate": "binance_basis_rate",
+                "annualized_basis_rate": "binance_annualized_basis_rate",
+            },
+            exc,
+        )
     frame = pd.DataFrame(rows)
     if frame.empty:
         raise RuntimeError("Binance basis returned no rows")
@@ -1705,6 +1875,9 @@ def run_research(*, refresh: bool = False, quick: bool = False, output_dir: Path
     created_at = utc_now_iso()
     run_id = f"btc_research_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     config = ResearchConfig()
+    from diagnostic_outputs import preserve_quick_baseline
+
+    baseline_dir = preserve_quick_baseline(output_dir, refresh)
     write_initial_data_availability(output_dir, run_id, created_at)
 
     data = load_research_data(
@@ -1763,4 +1936,18 @@ def run_research(*, refresh: bool = False, quick: bool = False, output_dir: Path
         quick_mode=quick,
         warnings=data.warnings,
     )
+    from diagnostic_outputs import write_diagnostics
+
+    diagnostic_outputs = write_diagnostics(
+        output_dir=output_dir,
+        run_id=run_id,
+        raw=data.raw,
+        feature_result=feature_result,
+        config=config,
+        base_outputs=outputs,
+        latest=latest,
+        baseline_dir=baseline_dir,
+        quick=quick,
+    )
+    outputs.update(diagnostic_outputs)
     return outputs

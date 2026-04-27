@@ -20,6 +20,7 @@ CACHE_DIR.mkdir(exist_ok=True)
 USER_AGENT = "btc-factor-dashboard/1.0 (+local research app)"
 
 YAHOO_MARKETS: Dict[str, str] = {
+    "BTC-USD": "btc_proxy_close",
     "ETH-USD": "eth_close",
     "^GSPC": "spx_close",
     "^IXIC": "nasdaq_close",
@@ -58,7 +59,7 @@ COINMETRICS_METRICS: Dict[str, str] = {
 }
 
 SOURCE_NOTES = {
-    "Yahoo chart API": "Daily OHLCV for BTC plus market proxies: ETH, S&P 500, Nasdaq, VIX, dollar index, gold, and TLT. Unofficial but keyless.",
+    "Yahoo chart API": "Daily OHLCV for the selected asset plus market proxies: BTC, ETH, S&P 500, Nasdaq, VIX, dollar index, gold, and TLT. Unofficial but keyless.",
     "Coin Metrics Community API": "Daily BTC on-chain metrics. Community endpoint is free without an API key for non-commercial use.",
     "FRED CSV downloads": "Daily and lower-frequency macro series from St. Louis Fed graph CSV downloads. No API key is needed for graph CSV files.",
     "Alternative.me Fear & Greed": "Daily crypto fear/greed sentiment values from the public Alternative.me endpoint.",

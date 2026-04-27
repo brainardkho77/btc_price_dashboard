@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from research_config import ResearchConfig
+from research_config import ResearchConfig, build_source_specs, get_asset_config
 from research_pipeline import (
     MANUAL_DERIVATIVE_SPECS,
     _parse_binance_archive_zip,
@@ -17,6 +17,7 @@ from research_pipeline import (
     build_walk_forward_windows,
     compute_metrics,
     decorate_summary,
+    initial_data_availability,
     select_feature_columns,
     select_primary_model,
     validate_manual_derivative_csv,
@@ -63,6 +64,67 @@ def synthetic_research_raw(rows=1500):
         index=dates,
     )
     return raw
+
+
+def synthetic_sol_raw(rows=900):
+    dates = pd.date_range("2021-01-01", periods=rows, freq="D")
+    price = pd.Series(25 * np.exp(np.linspace(0, 1.0, rows) + np.sin(np.arange(rows) / 25) * 0.12), index=dates)
+    return pd.DataFrame(
+        {
+            "asset_open": price * 0.99,
+            "asset_high": price * 1.03,
+            "asset_low": price * 0.97,
+            "asset_close": price,
+            "asset_volume": 5_000_000 + np.arange(rows) * 1000,
+            "btc_proxy_close": 30_000 * np.exp(np.linspace(0, 0.5, rows)),
+            "eth_close": 1500 * np.exp(np.linspace(0, 0.45, rows)),
+            "spx_close": 3800 + np.arange(rows),
+            "vix_close": 22 + np.sin(np.arange(rows) / 30),
+            "us_10y_yield": 3.5 + np.sin(np.arange(rows) / 100) * 0.4,
+            "trade_weighted_usd": 120 + np.cos(np.arange(rows) / 70),
+            "m2_money_supply": 20_000 + np.arange(rows),
+            "stablecoin_total_circulating_usd": 120_000_000_000 + np.arange(rows) * 5_000_000,
+            "fear_greed_value": 50 + np.sin(np.arange(rows) / 30) * 20,
+        },
+        index=dates,
+    )
+
+
+def test_asset_config_resolves_btc_and_sol_symbols():
+    btc = get_asset_config("btc")
+    sol = get_asset_config("sol")
+    assert btc.coinbase_product == "BTC-USD"
+    assert btc.enable_derivatives is True
+    assert btc.enable_onchain is True
+    assert sol.coinbase_product == "SOL-USD"
+    assert sol.yahoo_symbol == "SOL-USD"
+    assert sol.coingecko_id == "solana"
+    assert sol.enable_derivatives is False
+    assert sol.enable_onchain is False
+
+
+def test_sol_source_specs_record_skipped_sources_honestly():
+    sol = get_asset_config("sol")
+    availability = initial_data_availability("run", "2026-01-01T00:00:00+00:00", build_source_specs(sol))
+    assert "coinbase_sol_usd_candles" in set(availability["dataset"])
+    assert "yahoo_sol_usd" in set(availability["dataset"])
+    assert "coingecko_sol_usd" in set(availability["dataset"])
+    assert "spot_sol_etf_flows" in set(availability["dataset"])
+    etf = availability[availability["dataset"] == "spot_sol_etf_flows"].iloc[0]
+    assert etf["status"] == "unavailable"
+    assert bool(etf["is_used_in_model"]) is False
+
+
+def test_sol_target_generation_uses_future_sol_prices_only():
+    config = ResearchConfig()
+    raw = synthetic_sol_raw()
+    feature_result = build_features(raw, config)
+    frame = build_target_frame(raw, feature_result.features, feature_result.feature_cols, 30)
+    row_date = raw.index[100]
+    expected = np.log(raw.loc[raw.index[130], "asset_close"] / raw.loc[row_date, "asset_close"])
+    assert np.isclose(frame.loc[row_date, "target_log_return"], expected)
+    assert pd.isna(frame["target_log_return"].iloc[-1])
+    assert "cross_asset_btc_ret_30d" in feature_result.features.columns
 
 
 def test_target_generation_uses_future_prices_only():

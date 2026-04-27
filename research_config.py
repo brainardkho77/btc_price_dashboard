@@ -24,6 +24,55 @@ MIN_SAMPLE_THRESHOLDS = {
 
 
 @dataclass(frozen=True)
+class AssetConfig:
+    asset_id: str
+    display_name: str
+    coinbase_product: str
+    yahoo_symbol: str
+    coingecko_id: str
+    coingecko_dataset: str
+    coinmetrics_asset: str
+    binance_symbol: str
+    enable_derivatives: bool
+    enable_onchain: bool
+
+
+ASSET_CONFIGS: Dict[str, AssetConfig] = {
+    "btc": AssetConfig(
+        asset_id="btc",
+        display_name="BTC",
+        coinbase_product="BTC-USD",
+        yahoo_symbol="BTC-USD",
+        coingecko_id="bitcoin",
+        coingecko_dataset="coingecko_btc_usd",
+        coinmetrics_asset="btc",
+        binance_symbol="BTCUSDT",
+        enable_derivatives=True,
+        enable_onchain=True,
+    ),
+    "sol": AssetConfig(
+        asset_id="sol",
+        display_name="SOL",
+        coinbase_product="SOL-USD",
+        yahoo_symbol="SOL-USD",
+        coingecko_id="solana",
+        coingecko_dataset="coingecko_sol_usd",
+        coinmetrics_asset="sol",
+        binance_symbol="SOLUSDT",
+        enable_derivatives=False,
+        enable_onchain=False,
+    ),
+}
+
+
+def get_asset_config(asset_id: str) -> AssetConfig:
+    key = asset_id.lower()
+    if key not in ASSET_CONFIGS:
+        raise ValueError(f"Unsupported asset: {asset_id}")
+    return ASSET_CONFIGS[key]
+
+
+@dataclass(frozen=True)
 class SourceSpec:
     source: str
     endpoint: str
@@ -68,139 +117,155 @@ class ResearchConfig:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-SOURCE_SPECS: List[SourceSpec] = [
-    SourceSpec(
-        source="Coinbase Exchange",
-        endpoint="https://api.exchange.coinbase.com/products/BTC-USD/candles",
-        dataset="coinbase_btc_usd_candles",
-        requested_fields=["open", "high", "low", "close", "volume"],
-        source_group="price",
-    ),
-    SourceSpec(
-        source="Yahoo chart API",
-        endpoint="https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD",
-        dataset="yahoo_btc_usd",
-        requested_fields=["open", "high", "low", "close", "volume"],
-        source_group="price",
-    ),
-    SourceSpec(
-        source="CoinGecko API",
-        endpoint="https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range",
-        dataset="coingecko_btc_usd",
-        requested_fields=["price"],
-        source_group="price",
-        is_used_in_model=False,
-    ),
-    SourceSpec(
-        source="Yahoo chart API",
-        endpoint="https://query1.finance.yahoo.com/v8/finance/chart",
-        dataset="yahoo_market_proxies",
-        requested_fields=["eth_close", "spx_close", "nasdaq_close", "vix_close", "dxy_close", "gold_close", "tlt_close"],
-        source_group="price",
-    ),
-    SourceSpec(
-        source="FRED CSV downloads",
-        endpoint="https://fred.stlouisfed.org/graph/fredgraph.csv",
-        dataset="fred_macro",
-        requested_fields=[
-            "us_10y_yield",
-            "us_10y_2y_spread",
-            "us_10y_breakeven",
-            "fed_funds_rate",
-            "fed_balance_sheet",
-            "reverse_repo",
-            "m2_money_supply",
-            "trade_weighted_usd",
-        ],
-        source_group="fred_macro_daily",
-        revision_warning="FRED graph downloads are revised historical data, not point-in-time vintages.",
-    ),
-    SourceSpec(
-        source="Coin Metrics Community API",
-        endpoint="https://community-api.coinmetrics.io/v4/timeseries/asset-metrics",
-        dataset="coinmetrics_btc_daily",
-        requested_fields=[
-            "cm_price_usd",
-            "cm_market_cap_usd",
-            "cm_mvrv",
-            "cm_active_addresses",
-            "cm_tx_count",
-            "cm_hash_rate",
-            "cm_fees_btc",
-            "cm_exchange_inflow_usd",
-            "cm_exchange_outflow_usd",
-            "cm_supply",
-            "cm_exchange_supply_usd",
-            "cm_spot_volume_usd",
-            "cm_roi_30d",
-            "cm_roi_1y",
-        ],
-        source_group="coinmetrics_onchain",
-        revision_warning="Coin Metrics Community data is revised historical data unless point-in-time vintages are added.",
-    ),
-    SourceSpec(
-        source="Alternative.me Fear & Greed",
-        endpoint="https://api.alternative.me/fng/",
-        dataset="alternative_fear_greed",
-        requested_fields=["fear_greed_value", "fear_greed_label"],
-        source_group="manual_csv",
-    ),
-    SourceSpec(
-        source="Binance USD-M Futures",
-        endpoint="https://fapi.binance.com/fapi/v1/fundingRate",
-        dataset="binance_funding_rate",
-        requested_fields=["funding_rate"],
-        source_group="binance_derivatives",
-    ),
-    SourceSpec(
-        source="Binance USD-M Futures",
-        endpoint="https://fapi.binance.com/futures/data/openInterestHist",
-        dataset="binance_open_interest",
-        requested_fields=["sum_open_interest", "sum_open_interest_value"],
-        source_group="binance_derivatives",
-    ),
-    SourceSpec(
-        source="Binance USD-M Futures",
-        endpoint="https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
-        dataset="binance_long_short_ratio",
-        requested_fields=["long_short_ratio", "long_account", "short_account"],
-        source_group="binance_derivatives",
-    ),
-    SourceSpec(
-        source="Binance USD-M Futures",
-        endpoint="https://fapi.binance.com/futures/data/takerlongshortRatio",
-        dataset="binance_taker_buy_sell_ratio",
-        requested_fields=["taker_buy_sell_ratio", "taker_buy_volume", "taker_sell_volume"],
-        source_group="binance_derivatives",
-    ),
-    SourceSpec(
-        source="Binance USD-M Futures",
-        endpoint="https://fapi.binance.com/futures/data/basis",
-        dataset="binance_basis",
-        requested_fields=["basis", "basis_rate", "annualized_basis_rate"],
-        source_group="binance_derivatives",
-    ),
-    SourceSpec(
-        source="DefiLlama Stablecoins API",
-        endpoint="https://stablecoins.llama.fi/stablecoincharts/all",
-        dataset="defillama_stablecoins",
-        requested_fields=["stablecoin_total_circulating_usd"],
-        source_group="stablecoins",
-    ),
-    SourceSpec(
-        source="Manual CSV",
-        endpoint="local manual csv folder",
-        dataset="manual_csv",
-        requested_fields=[],
-        source_group="manual_csv",
-        is_used_in_model=False,
-    ),
-    SourceSpec(
-        source="ETF flows",
-        endpoint="not configured",
-        dataset="spot_btc_etf_flows",
-        requested_fields=["etf_flow_usd"],
-        source_group="manual_csv",
-        is_used_in_model=False,
-    ),
-]
+def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
+    coinmetrics_dataset = f"coinmetrics_{asset.asset_id}_daily"
+    etf_dataset = f"spot_{asset.asset_id}_etf_flows"
+    return [
+        SourceSpec(
+            source="Coinbase Exchange",
+            endpoint=f"https://api.exchange.coinbase.com/products/{asset.coinbase_product}/candles",
+            dataset=f"coinbase_{asset.asset_id}_usd_candles",
+            requested_fields=["open", "high", "low", "close", "volume"],
+            source_group="price",
+        ),
+        SourceSpec(
+            source="Yahoo chart API",
+            endpoint=f"https://query1.finance.yahoo.com/v8/finance/chart/{asset.yahoo_symbol}",
+            dataset=f"yahoo_{asset.asset_id}_usd",
+            requested_fields=["open", "high", "low", "close", "volume"],
+            source_group="price",
+        ),
+        SourceSpec(
+            source="CoinGecko API",
+            endpoint=f"https://api.coingecko.com/api/v3/coins/{asset.coingecko_id}/market_chart/range",
+            dataset=asset.coingecko_dataset,
+            requested_fields=["price"],
+            source_group="price",
+            is_used_in_model=False,
+        ),
+        SourceSpec(
+            source="Yahoo chart API",
+            endpoint="https://query1.finance.yahoo.com/v8/finance/chart",
+            dataset="yahoo_market_proxies",
+            requested_fields=[
+                "btc_proxy_close",
+                "eth_close",
+                "spx_close",
+                "nasdaq_close",
+                "vix_close",
+                "dxy_close",
+                "gold_close",
+                "tlt_close",
+            ],
+            source_group="price",
+        ),
+        SourceSpec(
+            source="FRED CSV downloads",
+            endpoint="https://fred.stlouisfed.org/graph/fredgraph.csv",
+            dataset="fred_macro",
+            requested_fields=[
+                "us_10y_yield",
+                "us_10y_2y_spread",
+                "us_10y_breakeven",
+                "fed_funds_rate",
+                "fed_balance_sheet",
+                "reverse_repo",
+                "m2_money_supply",
+                "trade_weighted_usd",
+            ],
+            source_group="fred_macro_daily",
+            revision_warning="FRED graph downloads are revised historical data, not point-in-time vintages.",
+        ),
+        SourceSpec(
+            source="Coin Metrics Community API",
+            endpoint="https://community-api.coinmetrics.io/v4/timeseries/asset-metrics",
+            dataset=coinmetrics_dataset,
+            requested_fields=[
+                "cm_price_usd",
+                "cm_market_cap_usd",
+                "cm_mvrv",
+                "cm_active_addresses",
+                "cm_tx_count",
+                "cm_hash_rate",
+                "cm_fees_btc",
+                "cm_exchange_inflow_usd",
+                "cm_exchange_outflow_usd",
+                "cm_supply",
+                "cm_exchange_supply_usd",
+                "cm_spot_volume_usd",
+                "cm_roi_30d",
+                "cm_roi_1y",
+            ],
+            source_group="coinmetrics_onchain",
+            is_used_in_model=asset.enable_onchain,
+            revision_warning="Coin Metrics Community data is revised historical data unless point-in-time vintages are added.",
+        ),
+        SourceSpec(
+            source="Alternative.me Fear & Greed",
+            endpoint="https://api.alternative.me/fng/",
+            dataset="alternative_fear_greed",
+            requested_fields=["fear_greed_value", "fear_greed_label"],
+            source_group="manual_csv",
+        ),
+        SourceSpec(
+            source="Binance USD-M Futures",
+            endpoint="https://fapi.binance.com/fapi/v1/fundingRate",
+            dataset="binance_funding_rate",
+            requested_fields=["funding_rate"],
+            source_group="binance_derivatives",
+        ),
+        SourceSpec(
+            source="Binance USD-M Futures",
+            endpoint="https://fapi.binance.com/futures/data/openInterestHist",
+            dataset="binance_open_interest",
+            requested_fields=["sum_open_interest", "sum_open_interest_value"],
+            source_group="binance_derivatives",
+        ),
+        SourceSpec(
+            source="Binance USD-M Futures",
+            endpoint="https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
+            dataset="binance_long_short_ratio",
+            requested_fields=["long_short_ratio", "long_account", "short_account"],
+            source_group="binance_derivatives",
+        ),
+        SourceSpec(
+            source="Binance USD-M Futures",
+            endpoint="https://fapi.binance.com/futures/data/takerlongshortRatio",
+            dataset="binance_taker_buy_sell_ratio",
+            requested_fields=["taker_buy_sell_ratio", "taker_buy_volume", "taker_sell_volume"],
+            source_group="binance_derivatives",
+        ),
+        SourceSpec(
+            source="Binance USD-M Futures",
+            endpoint="https://fapi.binance.com/futures/data/basis",
+            dataset="binance_basis",
+            requested_fields=["basis", "basis_rate", "annualized_basis_rate"],
+            source_group="binance_derivatives",
+        ),
+        SourceSpec(
+            source="DefiLlama Stablecoins API",
+            endpoint="https://stablecoins.llama.fi/stablecoincharts/all",
+            dataset="defillama_stablecoins",
+            requested_fields=["stablecoin_total_circulating_usd"],
+            source_group="stablecoins",
+        ),
+        SourceSpec(
+            source="Manual CSV",
+            endpoint="local manual csv folder",
+            dataset="manual_csv",
+            requested_fields=[],
+            source_group="manual_csv",
+            is_used_in_model=False,
+        ),
+        SourceSpec(
+            source="ETF flows",
+            endpoint="not configured",
+            dataset=etf_dataset,
+            requested_fields=["etf_flow_usd"],
+            source_group="manual_csv",
+            is_used_in_model=False,
+        ),
+    ]
+
+
+SOURCE_SPECS: List[SourceSpec] = build_source_specs(ASSET_CONFIGS["btc"])

@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from research_config import get_asset_config
 from schemas import (
     REQUIRED_OUTPUT_FILES,
     SchemaError,
@@ -18,10 +19,10 @@ from schemas import (
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs"
-MISSING_MESSAGE = "Run python research_run.py --refresh first."
+ASSET_OUTPUT_DIR = OUTPUT_DIR / "assets"
 
 
-st.set_page_config(page_title="BTC Research Validity Report", page_icon="BTC", layout="wide")
+st.set_page_config(page_title="Crypto Research Validity Report", page_icon="C", layout="wide")
 
 st.markdown(
     """
@@ -36,11 +37,11 @@ st.markdown(
 
 
 @st.cache_data(show_spinner=False)
-def load_outputs(output_dir: Path) -> dict:
+def load_outputs(output_dir: Path, missing_message: str) -> dict:
     try:
         validate_output_dir(output_dir, REQUIRED_OUTPUT_FILES)
     except (SchemaError, FileNotFoundError, pd.errors.EmptyDataError) as exc:
-        raise RuntimeError(f"{MISSING_MESSAGE}\n\n{exc}") from exc
+        raise RuntimeError(f"{missing_message}\n\n{exc}") from exc
 
     diagnostic_dir = output_dir / "csv"
     diagnostic_warnings = []
@@ -93,7 +94,16 @@ def fmt_usd(value: float) -> str:
     return f"${value:,.0f}"
 
 
-def equity_chart(equity: pd.DataFrame, horizon: int, window_type: str, model: str) -> go.Figure:
+def output_dir_for_asset(asset_id: str) -> Path:
+    asset_dir = ASSET_OUTPUT_DIR / asset_id
+    if asset_dir.exists():
+        return asset_dir
+    if asset_id == "btc":
+        return OUTPUT_DIR
+    return asset_dir
+
+
+def equity_chart(equity: pd.DataFrame, horizon: int, window_type: str, model: str, asset_name: str) -> go.Figure:
     frame = equity[
         (equity["horizon"] == horizon)
         & (equity["window_type"] == window_type)
@@ -102,7 +112,7 @@ def equity_chart(equity: pd.DataFrame, horizon: int, window_type: str, model: st
     fig = go.Figure()
     if not frame.empty:
         fig.add_trace(go.Scatter(x=frame["date"], y=frame["equity_tc_adjusted"], name="Model after costs", mode="lines"))
-        fig.add_trace(go.Scatter(x=frame["date"], y=frame["equity_buy_hold"], name="BTC buy and hold", mode="lines"))
+        fig.add_trace(go.Scatter(x=frame["date"], y=frame["equity_buy_hold"], name=f"{asset_name} buy and hold", mode="lines"))
     fig.update_layout(
         height=360,
         margin=dict(l=10, r=10, t=25, b=10),
@@ -143,8 +153,17 @@ def calibration_chart(calibration: pd.DataFrame, horizon: int, window_type: str,
     return fig
 
 
+selected_asset = st.sidebar.selectbox(
+    "Asset",
+    ["btc", "sol"],
+    format_func=lambda asset_id: get_asset_config(asset_id).display_name,
+)
+asset_config = get_asset_config(selected_asset)
+selected_output_dir = output_dir_for_asset(selected_asset)
+missing_message = f"Run python research_run.py --refresh --asset {selected_asset} first."
+
 try:
-    outputs = load_outputs(OUTPUT_DIR)
+    outputs = load_outputs(selected_output_dir, missing_message)
 except RuntimeError as exc:
     st.error(str(exc))
     st.stop()
@@ -166,11 +185,12 @@ derivatives_coverage = outputs["derivatives_coverage"]
 derivatives_impact = outputs["derivatives_impact"]
 feature_group_stability = outputs["feature_group_stability"]
 manifest = outputs["manifest"]
+asset_name = str(manifest.get("asset_name") or asset_config.display_name)
 
 primary = latest.loc[latest["is_primary_objective"] == True].head(1)
 primary_row = primary.iloc[0] if not primary.empty else latest.iloc[0]
 
-st.title("BTC Research Validity Report")
+st.title(f"{asset_name} Research Validity Report")
 st.markdown(
     "<span class='small-note'>Read-only report. All models, thresholds, calibration, and backtests are precomputed by <code>research_run.py</code>.</span>",
     unsafe_allow_html=True,
@@ -184,7 +204,7 @@ top[3].metric("Reliability", str(primary_row["reliability_label"]))
 top[4].metric("Run mode", "Quick" if manifest.get("quick_mode") else "Refresh")
 
 forecast_cols = st.columns(4)
-forecast_cols[0].metric("BTC spot", fmt_usd(primary_row["current_price"]), str(primary_row["as_of_date"]))
+forecast_cols[0].metric(f"{asset_name} spot", fmt_usd(primary_row["current_price"]), str(primary_row["as_of_date"]))
 forecast_cols[1].metric("Probability up", fmt_pct(primary_row["predicted_probability_up"]))
 forecast_cols[2].metric("Expected return", fmt_pct(primary_row["expected_return"]))
 forecast_cols[3].metric("Model-implied forecast price", fmt_usd(primary_row["model_implied_forecast_price"]))
@@ -201,7 +221,7 @@ if outputs.get("diagnostic_warnings"):
 
 if str(primary_row["selected_model"]) == "no_valid_edge":
     st.info(
-        "The full refresh did not validate a 30d BTC directional edge. "
+        f"The full refresh did not validate a 30d {asset_name} directional edge. "
         "The dashboard is therefore showing a neutral signal instead of forcing a forecast."
     )
 
@@ -263,7 +283,7 @@ with quality_tab:
     if chart_model == "no_valid_edge" or chart_model not in set(equity["model"]):
         chart_model = str(table.iloc[0]["model"]) if not table.empty else ""
     if chart_model:
-        st.plotly_chart(equity_chart(equity, selected_horizon, selected_window, chart_model), use_container_width=True)
+        st.plotly_chart(equity_chart(equity, selected_horizon, selected_window, chart_model, asset_name), use_container_width=True)
 
 with no_edge_tab:
     st.subheader("No Valid Edge Diagnostics")

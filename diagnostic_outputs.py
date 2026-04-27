@@ -17,19 +17,20 @@ BASELINE_DIR = Path("/tmp/btc_refresh_baseline")
 
 
 def preserve_quick_baseline(output_dir: Path, refresh: bool) -> Optional[Path]:
+    baseline_dir = Path(f"/tmp/btc_refresh_baseline_{output_dir.name}")
     if not refresh:
         return None
     manifest_path = output_dir / "run_manifest.json"
     if not manifest_path.exists():
-        return BASELINE_DIR if BASELINE_DIR.exists() else None
+        return baseline_dir if baseline_dir.exists() else BASELINE_DIR if BASELINE_DIR.exists() else None
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return BASELINE_DIR if BASELINE_DIR.exists() else None
+        return baseline_dir if baseline_dir.exists() else BASELINE_DIR if BASELINE_DIR.exists() else None
     if not manifest.get("quick_mode"):
-        return BASELINE_DIR if BASELINE_DIR.exists() else None
+        return baseline_dir if baseline_dir.exists() else BASELINE_DIR if BASELINE_DIR.exists() else None
 
-    BASELINE_DIR.mkdir(parents=True, exist_ok=True)
+    baseline_dir.mkdir(parents=True, exist_ok=True)
     for filename in [
         "run_manifest.json",
         "data_availability.csv",
@@ -39,8 +40,8 @@ def preserve_quick_baseline(output_dir: Path, refresh: bool) -> Optional[Path]:
     ]:
         src = output_dir / filename
         if src.exists():
-            shutil.copy2(src, BASELINE_DIR / filename)
-    return BASELINE_DIR
+            shutil.copy2(src, baseline_dir / filename)
+    return baseline_dir
 
 
 def feature_group_for_feature(feature: str) -> str:
@@ -368,7 +369,8 @@ def _max_drawdown_from_returns(returns: pd.Series) -> float:
 
 
 def _regime_masks(raw: pd.DataFrame, dates: pd.DatetimeIndex) -> Dict[str, pd.Series]:
-    price = raw["btc_close"].astype(float)
+    price_col = "asset_close" if "asset_close" in raw.columns else "btc_close"
+    price = raw[price_col].astype(float)
     log_ret = np.log(price).diff()
     sma_200 = price.rolling(200, min_periods=100).mean()
     vol_90 = log_ret.rolling(90, min_periods=30).std()
@@ -411,7 +413,8 @@ def model_regime_breakdown(run_id: str, raw: pd.DataFrame, equity: pd.DataFrame,
             if part.empty:
                 continue
             pred_up = (part["signal"] == "long").astype(int)
-            actual_up = (part["btc_return"] > 0).astype(int)
+            return_col = "asset_return" if "asset_return" in part.columns else "btc_return"
+            actual_up = (part[return_col] > 0).astype(int)
             returns = part["tc_adjusted_strategy_return"].astype(float)
             periods = 12.0 if int(horizon) == 30 else 4.0 if int(horizon) == 90 else 2.0
             std = float(returns.std(ddof=1))
@@ -648,6 +651,7 @@ def _fmt_num(value: object, digits: int = 2) -> str:
 
 def write_full_refresh_diagnostics_report(output_dir: Path, baseline_dir: Optional[Path]) -> Path:
     manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    asset_name = str(manifest.get("asset_name") or "BTC")
     latest = pd.read_csv(output_dir / "latest_forecast.csv")
     leaderboard = pd.read_csv(output_dir / "model_leaderboard.csv")
     rejection = pd.read_csv(output_dir / "csv" / "model_rejection_reasons.csv")
@@ -805,7 +809,7 @@ def write_full_refresh_diagnostics_report(output_dir: Path, baseline_dir: Option
         [
             "",
             "## Conclusion",
-            "- The full refresh did not validate a 30d BTC directional edge.",
+            f"- The full refresh did not validate a 30d {asset_name} directional edge.",
             "- `no_valid_edge` remains the correct conclusion unless future data reliability or feature diagnostics materially improve.",
             "- Recommended next step: improve Binance/manual derivatives coverage, then rerun this diagnostic sprint before adding more models.",
         ]

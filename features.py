@@ -103,6 +103,16 @@ def _rolling_slope(series: pd.Series, window: int) -> pd.Series:
     return series.rolling(window, min_periods=window).apply(slope, raw=True)
 
 
+def _asset_column(raw: pd.DataFrame, name: str) -> str:
+    generic = f"asset_{name}"
+    legacy = f"btc_{name}"
+    if generic in raw.columns:
+        return generic
+    if legacy in raw.columns:
+        return legacy
+    raise KeyError(generic)
+
+
 def _last_halving_date(date: pd.Timestamp) -> pd.Timestamp:
     last = HALVINGS[0]
     for halving in HALVINGS:
@@ -112,7 +122,7 @@ def _last_halving_date(date: pd.Timestamp) -> pd.Timestamp:
 
 
 def add_technical_features(raw: pd.DataFrame, out: pd.DataFrame) -> None:
-    price = raw["btc_close"]
+    price = raw[_asset_column(raw, "close")]
     log_price = _safe_log(price)
     returns = log_price.diff()
 
@@ -140,11 +150,14 @@ def add_technical_features(raw: pd.DataFrame, out: pd.DataFrame) -> None:
     out["volatility_drawdown_365d"] = price / rolling_high_365 - 1
     out["trend_dist_ath"] = price / price.cummax() - 1
 
-    if {"btc_high", "btc_low"}.issubset(raw.columns):
-        out["volatility_intraday_range"] = (raw["btc_high"] - raw["btc_low"]) / price
+    high_col = "asset_high" if "asset_high" in raw.columns else "btc_high" if "btc_high" in raw.columns else ""
+    low_col = "asset_low" if "asset_low" in raw.columns else "btc_low" if "btc_low" in raw.columns else ""
+    if high_col and low_col:
+        out["volatility_intraday_range"] = (raw[high_col] - raw[low_col]) / price
 
-    if "btc_volume" in raw:
-        volume = raw["btc_volume"].replace(0, np.nan)
+    volume_col = "asset_volume" if "asset_volume" in raw.columns else "btc_volume" if "btc_volume" in raw.columns else ""
+    if volume_col:
+        volume = raw[volume_col].replace(0, np.nan)
         out["volume_log"] = _safe_log(volume)
         out["volume_z_30d"] = _zscore(volume, 30, 15)
         out["volume_z_90d"] = _zscore(volume, 90, 30)
@@ -153,6 +166,7 @@ def add_technical_features(raw: pd.DataFrame, out: pd.DataFrame) -> None:
 
 def add_cross_asset_features(raw: pd.DataFrame, out: pd.DataFrame) -> None:
     close_cols = {
+        "btc_proxy_close": "cross_asset_btc",
         "eth_close": "cross_asset_eth",
         "spx_close": "cross_asset_spx",
         "nasdaq_close": "cross_asset_nasdaq",
@@ -299,17 +313,18 @@ def build_training_data(raw: pd.DataFrame, horizon: int) -> TrainingData:
     if horizon <= 0:
         raise ValueError("horizon must be positive")
     features = make_features(raw)
-    price = raw["btc_close"]
+    price = raw[_asset_column(raw, "close")]
     target = np.log(price.shift(-horizon) / price)
 
     frame = features.copy()
+    frame["asset_close"] = price
     frame["btc_close"] = price
     frame["future_close"] = price.shift(-horizon)
     frame["target_log_return"] = target
     frame["target_up"] = (target > 0).astype(float)
 
     cols = feature_columns(features)
-    frame = frame.dropna(subset=["btc_close"])
+    frame = frame.dropna(subset=["asset_close"])
     return TrainingData(frame=frame, feature_cols=cols, target_col="target_log_return", horizon=horizon)
 
 

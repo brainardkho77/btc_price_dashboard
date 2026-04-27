@@ -87,6 +87,7 @@ OUTPUT_SCHEMAS: Dict[str, List[str]] = {
         "model",
         "signal",
         "position",
+        "asset_return",
         "btc_return",
         "gross_strategy_return",
         "tc_adjusted_strategy_return",

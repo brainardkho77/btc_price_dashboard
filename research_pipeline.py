@@ -22,14 +22,22 @@ import requests
 from data_sources import (
     CACHE_DIR,
     USER_AGENT,
-    fetch_btc_price,
     fetch_coinmetrics,
     fetch_fear_greed,
     fetch_fred,
     fetch_market_proxies,
+    fetch_yahoo_chart,
 )
 from features import make_features
-from research_config import MIN_SAMPLE_THRESHOLDS, SOURCE_SPECS, ResearchConfig, SourceSpec
+from research_config import (
+    MIN_SAMPLE_THRESHOLDS,
+    SOURCE_SPECS,
+    AssetConfig,
+    ResearchConfig,
+    SourceSpec,
+    build_source_specs,
+    get_asset_config,
+)
 from schemas import empty_output_frame, write_schema_csv
 
 
@@ -222,21 +230,26 @@ def _availability_record(
     }
 
 
-def initial_data_availability(run_id: str, generated_at: str) -> pd.DataFrame:
+def initial_data_availability(run_id: str, generated_at: str, source_specs: Optional[Sequence[SourceSpec]] = None) -> pd.DataFrame:
     rows = []
-    for spec in SOURCE_SPECS:
-        status = "unavailable" if spec.dataset == "spot_btc_etf_flows" else "skipped"
-        reason = "No free source configured; not fabricated." if spec.dataset == "spot_btc_etf_flows" else "Not attempted yet."
+    for spec in list(source_specs or SOURCE_SPECS):
+        status = "unavailable" if spec.dataset.startswith("spot_") and spec.dataset.endswith("_etf_flows") else "skipped"
+        reason = "No free source configured; not fabricated." if status == "unavailable" else "Not attempted yet."
         rows.append(_availability_record(run_id, generated_at, spec, status, failure_reason=reason, used_override=False))
     return pd.DataFrame(rows)
 
 
-def write_initial_data_availability(output_dir: Path, run_id: str, generated_at: str) -> None:
-    write_schema_csv("data_availability.csv", initial_data_availability(run_id, generated_at), output_dir)
+def write_initial_data_availability(
+    output_dir: Path,
+    run_id: str,
+    generated_at: str,
+    source_specs: Optional[Sequence[SourceSpec]] = None,
+) -> None:
+    write_schema_csv("data_availability.csv", initial_data_availability(run_id, generated_at, source_specs), output_dir)
 
 
-def _source_spec(dataset: str) -> SourceSpec:
-    for spec in SOURCE_SPECS:
+def _source_spec(dataset: str, source_specs: Optional[Sequence[SourceSpec]] = None) -> SourceSpec:
+    for spec in list(source_specs or SOURCE_SPECS):
         if spec.dataset == dataset:
             return spec
     raise KeyError(dataset)
@@ -251,8 +264,9 @@ def _load_source(
     quick: bool,
     allow_quick_fetch: bool,
     used_override: Optional[bool] = None,
+    source_specs: Optional[Sequence[SourceSpec]] = None,
 ) -> Tuple[Optional[pd.DataFrame], dict]:
-    spec = _source_spec(dataset)
+    spec = _source_spec(dataset, source_specs)
     cached = _read_cached_dataset(dataset)
     if quick and cached is not None and not cached.empty:
         return cached, _availability_record(
@@ -430,7 +444,7 @@ def _load_derivative_source(
     return None, records
 
 
-def fetch_coinbase_btc_usd(start_date: str, end_date: Optional[str]) -> pd.DataFrame:
+def fetch_coinbase_asset_usd(asset: AssetConfig, start_date: str, end_date: Optional[str]) -> pd.DataFrame:
     start = pd.Timestamp(start_date, tz="UTC")
     end = pd.Timestamp(end_date, tz="UTC") if end_date else pd.Timestamp.utcnow().tz_convert("UTC").normalize()
     cursor = start
@@ -438,7 +452,7 @@ def fetch_coinbase_btc_usd(start_date: str, end_date: Optional[str]) -> pd.DataF
     while cursor < end:
         chunk_end = min(cursor + pd.Timedelta(days=299), end)
         response = requests.get(
-            "https://api.exchange.coinbase.com/products/BTC-USD/candles",
+            f"https://api.exchange.coinbase.com/products/{asset.coinbase_product}/candles",
             params={
                 "granularity": 86400,
                 "start": cursor.isoformat(),
@@ -463,21 +477,44 @@ def fetch_coinbase_btc_usd(start_date: str, end_date: Optional[str]) -> pd.DataF
     frame = frame[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
     frame = frame.rename(
         columns={
-            "open": "btc_open",
-            "high": "btc_high",
-            "low": "btc_low",
-            "close": "btc_close",
-            "volume": "btc_volume",
+            "open": "asset_open",
+            "high": "asset_high",
+            "low": "asset_low",
+            "close": "asset_close",
+            "volume": "asset_volume",
         }
     )
-    return _write_cached_dataset("coinbase_btc_usd_candles", frame)
+    return _write_cached_dataset(f"coinbase_{asset.asset_id}_usd_candles", frame)
 
 
-def fetch_coingecko_btc_usd(start_date: str, end_date: Optional[str]) -> pd.DataFrame:
+def fetch_coinbase_btc_usd(start_date: str, end_date: Optional[str]) -> pd.DataFrame:
+    return fetch_coinbase_asset_usd(get_asset_config("btc"), start_date, end_date)
+
+
+def fetch_yahoo_asset_price(asset: AssetConfig, *, force: bool = False) -> pd.DataFrame:
+    dataset = f"yahoo_{asset.asset_id}_usd"
+    if not force:
+        cached = _read_cached_dataset(dataset)
+        if cached is not None and not cached.empty:
+            return cached
+    chart = fetch_yahoo_chart(asset.yahoo_symbol)
+    frame = chart.rename(
+        columns={
+            "open": "asset_open",
+            "high": "asset_high",
+            "low": "asset_low",
+            "close": "asset_close",
+            "volume": "asset_volume",
+        }
+    )
+    return _write_cached_dataset(dataset, frame)
+
+
+def fetch_coingecko_asset_usd(asset: AssetConfig, start_date: str, end_date: Optional[str]) -> pd.DataFrame:
     start_ts = int(pd.Timestamp(start_date, tz="UTC").timestamp())
     end_ts = int((pd.Timestamp(end_date, tz="UTC") if end_date else pd.Timestamp.utcnow()).timestamp())
     response = requests.get(
-        "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range",
+        f"https://api.coingecko.com/api/v3/coins/{asset.coingecko_id}/market_chart/range",
         params={"vs_currency": "usd", "from": start_ts, "to": end_ts},
         headers={"User-Agent": USER_AGENT},
         timeout=30,
@@ -487,10 +524,14 @@ def fetch_coingecko_btc_usd(start_date: str, end_date: Optional[str]) -> pd.Data
     prices = data.get("prices") or []
     if not prices:
         raise RuntimeError("CoinGecko returned no prices")
-    frame = pd.DataFrame(prices, columns=["timestamp_ms", "btc_close"])
+    frame = pd.DataFrame(prices, columns=["timestamp_ms", "asset_close"])
     frame["date"] = pd.to_datetime(frame["timestamp_ms"], unit="ms", utc=True).dt.tz_localize(None).dt.normalize()
-    frame = frame.groupby("date", as_index=True)["btc_close"].last().to_frame().sort_index()
-    return _write_cached_dataset("coingecko_btc_usd", frame)
+    frame = frame.groupby("date", as_index=True)["asset_close"].last().to_frame().sort_index()
+    return _write_cached_dataset(asset.coingecko_dataset, frame)
+
+
+def fetch_coingecko_btc_usd(start_date: str, end_date: Optional[str]) -> pd.DataFrame:
+    return fetch_coingecko_asset_usd(get_asset_config("btc"), start_date, end_date)
 
 
 def fetch_defillama_stablecoins() -> pd.DataFrame:
@@ -956,6 +997,29 @@ def fetch_binance_basis() -> pd.DataFrame:
     return _write_cached_dataset("binance_basis", out.sort_index())
 
 
+def _normalize_asset_price_frame(frame: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    if frame is None or frame.empty:
+        return frame
+    rename_map = {
+        "btc_open": "asset_open",
+        "btc_high": "asset_high",
+        "btc_low": "asset_low",
+        "btc_close": "asset_close",
+        "btc_volume": "asset_volume",
+        "open": "asset_open",
+        "high": "asset_high",
+        "low": "asset_low",
+        "close": "asset_close",
+        "volume": "asset_volume",
+    }
+    out = frame.copy()
+    for old, new in rename_map.items():
+        if new not in out.columns and old in out.columns:
+            out[new] = out[old]
+    keep = [col for col in ["asset_open", "asset_high", "asset_low", "asset_close", "asset_volume"] if col in out.columns]
+    return out[keep] if keep else out
+
+
 def load_research_data(
     config: ResearchConfig,
     *,
@@ -964,59 +1028,72 @@ def load_research_data(
     refresh: bool,
     quick: bool,
     output_dir: Path,
+    asset_config: Optional[AssetConfig] = None,
 ) -> DataLayerResult:
     warnings: List[str] = []
     records: List[dict] = []
     effective_start = config.quick_start_date if quick else config.start_date
+    asset = asset_config or get_asset_config("btc")
+    source_specs = build_source_specs(asset)
+    coinbase_dataset = f"coinbase_{asset.asset_id}_usd_candles"
+    yahoo_dataset = f"yahoo_{asset.asset_id}_usd"
+    coinmetrics_dataset = f"coinmetrics_{asset.asset_id}_daily"
+    etf_dataset = f"spot_{asset.asset_id}_etf_flows"
 
     coinbase, record = _load_source(
         run_id,
         generated_at,
-        "coinbase_btc_usd_candles",
-        lambda: fetch_coinbase_btc_usd(effective_start, config.end_date),
+        coinbase_dataset,
+        lambda: fetch_coinbase_asset_usd(asset, effective_start, config.end_date),
         quick=quick and not refresh,
         allow_quick_fetch=True,
+        source_specs=source_specs,
     )
+    coinbase = _normalize_asset_price_frame(coinbase)
     records.append(record)
 
-    yahoo_btc, record = _load_source(
+    yahoo_asset, record = _load_source(
         run_id,
         generated_at,
-        "yahoo_btc_usd",
-        lambda: fetch_btc_price(force=refresh),
+        yahoo_dataset,
+        lambda: fetch_yahoo_asset_price(asset, force=refresh),
         quick=quick and not refresh,
         allow_quick_fetch=True,
+        source_specs=source_specs,
     )
+    yahoo_asset = _normalize_asset_price_frame(yahoo_asset)
     records.append(record)
 
-    if coinbase is not None and len(coinbase.dropna(subset=["btc_close"])) >= 365:
+    if coinbase is not None and len(coinbase.dropna(subset=["asset_close"])) >= 365:
         price = coinbase.copy()
-        if yahoo_btc is not None:
-            price = price.combine_first(yahoo_btc)
-    elif yahoo_btc is not None:
-        price = yahoo_btc.copy()
-        warnings.append("Coinbase price was unavailable or sparse; Yahoo BTC-USD was used as fallback.")
+        if yahoo_asset is not None:
+            price = price.combine_first(yahoo_asset)
+    elif yahoo_asset is not None:
+        price = yahoo_asset.copy()
+        warnings.append(f"Coinbase price was unavailable or sparse; Yahoo {asset.yahoo_symbol} was used as fallback.")
     else:
         coingecko, record = _load_source(
             run_id,
             generated_at,
-            "coingecko_btc_usd",
-            lambda: fetch_coingecko_btc_usd(effective_start, config.end_date),
+            asset.coingecko_dataset,
+            lambda: fetch_coingecko_asset_usd(asset, effective_start, config.end_date),
             quick=quick and not refresh,
             allow_quick_fetch=True,
             used_override=True,
+            source_specs=source_specs,
         )
+        coingecko = _normalize_asset_price_frame(coingecko)
         records.append(record)
         if coingecko is None:
-            raise RuntimeError("No BTC price source worked; cannot build research dataset.")
+            raise RuntimeError(f"No {asset.display_name} price source worked; cannot build research dataset.")
         price = coingecko.copy()
 
-    if "coingecko_btc_usd" not in [r["dataset"] for r in records]:
+    if asset.coingecko_dataset not in [r["dataset"] for r in records]:
         records.append(
             _availability_record(
                 run_id,
                 generated_at,
-                _source_spec("coingecko_btc_usd"),
+                _source_spec(asset.coingecko_dataset, source_specs),
                 "skipped",
                 failure_reason="Skipped because Coinbase/Yahoo price data was available.",
                 used_override=False,
@@ -1026,10 +1103,11 @@ def load_research_data(
     loaders: List[Tuple[str, Callable[[], pd.DataFrame], bool]] = [
         ("yahoo_market_proxies", lambda: fetch_market_proxies(force=refresh), True),
         ("fred_macro", lambda: fetch_fred(force=refresh), True),
-        ("coinmetrics_btc_daily", lambda: fetch_coinmetrics(force=refresh), True),
         ("alternative_fear_greed", lambda: fetch_fear_greed(force=refresh), True),
         ("defillama_stablecoins", fetch_defillama_stablecoins, True),
     ]
+    if asset.enable_onchain:
+        loaders.insert(2, (coinmetrics_dataset, lambda: fetch_coinmetrics(force=refresh, start=config.start_date), True))
 
     frames: List[pd.DataFrame] = [price]
     for dataset, fetcher, allow_quick_fetch in loaders:
@@ -1040,12 +1118,27 @@ def load_research_data(
             fetcher,
             quick=quick and not refresh,
             allow_quick_fetch=allow_quick_fetch,
+            source_specs=source_specs,
         )
+        if dataset == "yahoo_market_proxies" and frame is not None and asset.asset_id == "btc":
+            frame = frame.drop(columns=["btc_proxy_close"], errors="ignore")
         records.append(record)
         if frame is not None and not frame.empty:
             frames.append(frame)
 
-    if refresh and not quick:
+    if not asset.enable_onchain:
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                _source_spec(coinmetrics_dataset, source_specs),
+                "skipped",
+                failure_reason=f"{asset.display_name} v1 disables on-chain metrics; not fabricated.",
+                used_override=False,
+            )
+        )
+
+    if asset.enable_derivatives and refresh and not quick:
         try:
             warnings.extend(recover_binance_archive_manual_csvs(refresh=refresh))
         except Exception as exc:
@@ -1058,17 +1151,30 @@ def load_research_data(
         ("binance_taker_buy_sell_ratio", fetch_binance_taker_ratio),
         ("binance_basis", fetch_binance_basis),
     ]
-    for dataset, fetcher in derivative_loaders:
-        frame, derivative_records = _load_derivative_source(
-            run_id,
-            generated_at,
-            dataset,
-            fetcher,
-            quick=quick and not refresh,
-        )
-        records.extend(derivative_records)
-        if frame is not None and not frame.empty:
-            frames.append(frame)
+    if asset.enable_derivatives:
+        for dataset, fetcher in derivative_loaders:
+            frame, derivative_records = _load_derivative_source(
+                run_id,
+                generated_at,
+                dataset,
+                fetcher,
+                quick=quick and not refresh,
+            )
+            records.extend(derivative_records)
+            if frame is not None and not frame.empty:
+                frames.append(frame)
+    else:
+        for dataset, _ in derivative_loaders:
+            records.append(
+                _availability_record(
+                    run_id,
+                    generated_at,
+                    _source_spec(dataset, source_specs),
+                    "skipped",
+                    failure_reason=f"{asset.display_name} v1 derivatives disabled; not fabricated.",
+                    used_override=False,
+                )
+            )
 
     manual_records = [record for record in records if record["source"] == "manual_csv" and record["dataset"].startswith("binance_")]
     if manual_records:
@@ -1081,7 +1187,7 @@ def load_research_data(
         _availability_record(
             run_id,
             generated_at,
-            _source_spec("manual_csv"),
+            _source_spec("manual_csv", source_specs),
             manual_status,
             failure_reason=manual_reason,
             used_override=any(record["is_used_in_model"] for record in manual_records),
@@ -1091,7 +1197,7 @@ def load_research_data(
         _availability_record(
             run_id,
             generated_at,
-            _source_spec("spot_btc_etf_flows"),
+            _source_spec(etf_dataset, source_specs),
             "unavailable",
             failure_reason="No free source configured; ETF flows were not fabricated.",
             used_override=False,
@@ -1103,16 +1209,28 @@ def load_research_data(
     if config.end_date:
         raw = raw.loc[raw.index <= pd.Timestamp(config.end_date)]
 
-    if "btc_close" not in raw and "cm_price_usd" in raw:
-        raw["btc_close"] = raw["cm_price_usd"]
-    elif "btc_close" in raw and "cm_price_usd" in raw:
-        raw["btc_close"] = raw["btc_close"].combine_first(raw["cm_price_usd"])
+    if "asset_close" not in raw and asset.enable_onchain and "cm_price_usd" in raw:
+        raw["asset_close"] = raw["cm_price_usd"]
+    elif "asset_close" in raw and asset.enable_onchain and "cm_price_usd" in raw:
+        raw["asset_close"] = raw["asset_close"].combine_first(raw["cm_price_usd"])
+
+    if asset.asset_id == "btc":
+        legacy_map = {
+            "asset_open": "btc_open",
+            "asset_high": "btc_high",
+            "asset_low": "btc_low",
+            "asset_close": "btc_close",
+            "asset_volume": "btc_volume",
+        }
+        for generic, legacy in legacy_map.items():
+            if generic in raw and legacy not in raw:
+                raw[legacy] = raw[generic]
 
     numeric_cols = raw.select_dtypes(include=["number"]).columns
     raw[numeric_cols] = raw[numeric_cols].ffill()
     if "fear_greed_label" in raw:
         raw["fear_greed_label"] = raw["fear_greed_label"].ffill()
-    raw = raw.dropna(subset=["btc_close"]).sort_index()
+    raw = raw.dropna(subset=["asset_close"]).sort_index()
 
     availability = pd.DataFrame(records)
     write_schema_csv("data_availability.csv", availability, output_dir)
@@ -1122,7 +1240,12 @@ def load_research_data(
 
 
 def raw_column_source_group(column: str) -> str:
-    if column.startswith("btc_") or column.endswith("_close") or column in {"open", "high", "low", "close", "volume"}:
+    if (
+        column.startswith("asset_")
+        or column.startswith("btc_")
+        or column.endswith("_close")
+        or column in {"open", "high", "low", "close", "volume"}
+    ):
         return "price"
     if column.startswith("binance_"):
         return "binance_derivatives"
@@ -1235,8 +1358,10 @@ def _feature_source(feature: str) -> Tuple[str, str, str, int]:
     if feature.startswith("sentiment_"):
         return "manual_csv", "fear_greed_value", "sentiment transform", 1
     if feature.startswith("cross_asset_"):
+        if feature.startswith("cross_asset_btc"):
+            return "price", "btc_proxy_close", "cross-asset price transform", 0
         return "price", feature.replace("cross_asset_", "").split("_ret_")[0], "cross-asset price transform", 0
-    return "price", "btc_close", "price/technical transform", 0
+    return "price", "asset_close", "price/technical transform", 0
 
 
 def build_feature_audit(features: pd.DataFrame, feature_cols: Sequence[str], config: ResearchConfig) -> pd.DataFrame:
@@ -1276,9 +1401,11 @@ def build_features(raw: pd.DataFrame, config: ResearchConfig) -> FeatureBuildRes
 def build_target_frame(raw: pd.DataFrame, features: pd.DataFrame, feature_cols: Sequence[str], horizon: int) -> pd.DataFrame:
     if horizon <= 0:
         raise ValueError("horizon must be positive")
-    price = raw["btc_close"].astype(float)
+    price_col = "asset_close" if "asset_close" in raw.columns else "btc_close"
+    price = raw[price_col].astype(float)
     target_log_return = np.log(price.shift(-horizon) / price)
     frame = features.copy()
+    frame["asset_close"] = price
     frame["btc_close"] = price
     frame["future_close"] = price.shift(-horizon)
     frame["target_log_return"] = target_log_return
@@ -1323,7 +1450,7 @@ def build_walk_forward_windows(
     *,
     quick: bool,
 ) -> List[ResearchWindow]:
-    valid = frame.dropna(subset=["target_log_return", "target_up", "btc_close"]).copy()
+    valid = frame.dropna(subset=["target_log_return", "target_up", "asset_close"]).copy()
     initial_days = config.quick_initial_train_days if quick else config.initial_train_days
     if valid.empty:
         return []
@@ -1614,7 +1741,7 @@ def predict_model_windows(
     quick: bool,
 ) -> pd.DataFrame:
     rows = []
-    valid = frame.dropna(subset=["target_log_return", "target_up", "btc_close"]).copy()
+    valid = frame.dropna(subset=["target_log_return", "target_up", "asset_close"]).copy()
     for idx, window in enumerate(windows):
         train = valid.loc[valid.index < window.test_date].copy()
         test = valid.loc[[window.test_date]].copy()
@@ -1682,10 +1809,10 @@ def predict_baseline_windows(
     config: ResearchConfig,
 ) -> pd.DataFrame:
     rows = []
-    valid = frame.dropna(subset=["target_log_return", "target_up", "btc_close"]).copy()
+    valid = frame.dropna(subset=["target_log_return", "target_up", "asset_close"]).copy()
     stable_offset = int(hashlib.sha256(model_name.encode("utf-8")).hexdigest()[:8], 16) % 10000
     rng = np.random.default_rng(config.random_seed + stable_offset)
-    price = frame["btc_close"]
+    price = frame["asset_close"]
     ret_30 = np.log(price / price.shift(30))
     ret_90 = np.log(price / price.shift(90))
     for window in windows:
@@ -1883,7 +2010,8 @@ def confidence_intervals(
 
 def add_regime_columns(preds: pd.DataFrame, raw: pd.DataFrame) -> pd.DataFrame:
     out = preds.copy()
-    price = raw["btc_close"].astype(float)
+    price_col = "asset_close" if "asset_close" in raw.columns else "btc_close"
+    price = raw[price_col].astype(float)
     sma_200 = price.rolling(200, min_periods=100).mean()
     vol_90 = np.log(price).diff().rolling(90, min_periods=30).std()
     vol_median = vol_90.expanding(min_periods=180).median()
@@ -1946,6 +2074,7 @@ def _equity_output(run_id: str, returns_frame: pd.DataFrame, horizon: int, windo
     out["window_type"] = window_type
     out["model"] = model
     out["signal"] = np.where(out["predicted_up"] == 1, "long", "cash")
+    out["asset_return"] = out["actual_return"]
     out["btc_return"] = out["actual_return"]
     return out[
         [
@@ -1956,6 +2085,7 @@ def _equity_output(run_id: str, returns_frame: pd.DataFrame, horizon: int, windo
             "model",
             "signal",
             "position",
+            "asset_return",
             "btc_return",
             "gross_strategy_return",
             "tc_adjusted_strategy_return",
@@ -2198,8 +2328,9 @@ def build_latest_forecast(
     quick: bool,
 ) -> pd.DataFrame:
     selected_model, reason, reliability = select_primary_model(leaderboard)
-    current_price = float(raw["btc_close"].dropna().iloc[-1])
-    as_of_date = date_str(raw["btc_close"].dropna().index[-1])
+    price_col = "asset_close" if "asset_close" in raw.columns else "btc_close"
+    current_price = float(raw[price_col].dropna().iloc[-1])
+    as_of_date = date_str(raw[price_col].dropna().index[-1])
     rows = []
     for horizon in [30, 90, 180]:
         if selected_model == "no_valid_edge":
@@ -2282,10 +2413,16 @@ def write_manifest(
     features_count: int,
     quick_mode: bool,
     warnings: Sequence[str],
+    asset_config: Optional[AssetConfig] = None,
 ) -> Path:
+    asset = asset_config or get_asset_config("btc")
+    config_payload = {**config.to_dict(), "asset": asset.__dict__}
+    config_hash = hashlib.sha256(json.dumps(config_payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
     manifest = {
         "run_id": run_id,
         "schema_version": SCHEMA_VERSION,
+        "asset_id": asset.asset_id,
+        "asset_name": asset.display_name,
         "created_at": created_at,
         "git_commit": git_commit(),
         "python_version": sys.version.replace("\n", " "),
@@ -2293,7 +2430,7 @@ def write_manifest(
         "package_versions": package_versions(),
         "start_date": date_str(raw.index.min()) if len(raw) else "",
         "end_date": date_str(raw.index.max()) if len(raw) else "",
-        "config_hash": config.hash(),
+        "config_hash": config_hash,
         "data_snapshot_hash": dataframe_snapshot_hash(raw),
         "models_run": list(models_run),
         "features_count": int(features_count),
@@ -2306,15 +2443,23 @@ def write_manifest(
     return path
 
 
-def run_research(*, refresh: bool = False, quick: bool = False, output_dir: Path = OUTPUT_DIR) -> Dict[str, pd.DataFrame]:
+def run_research(
+    *,
+    refresh: bool = False,
+    quick: bool = False,
+    output_dir: Path = OUTPUT_DIR,
+    asset: str = "btc",
+) -> Dict[str, pd.DataFrame]:
     output_dir.mkdir(parents=True, exist_ok=True)
     created_at = utc_now_iso()
-    run_id = f"btc_research_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    asset_config = get_asset_config(asset)
+    source_specs = build_source_specs(asset_config)
+    run_id = f"{asset_config.asset_id}_research_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     config = ResearchConfig()
     from diagnostic_outputs import preserve_quick_baseline
 
     baseline_dir = preserve_quick_baseline(output_dir, refresh)
-    write_initial_data_availability(output_dir, run_id, created_at)
+    write_initial_data_availability(output_dir, run_id, created_at, source_specs)
 
     data = load_research_data(
         config,
@@ -2323,6 +2468,7 @@ def run_research(*, refresh: bool = False, quick: bool = False, output_dir: Path
         refresh=refresh,
         quick=quick,
         output_dir=output_dir,
+        asset_config=asset_config,
     )
     feature_result = build_features(data.raw, config)
     write_schema_csv("feature_audit.csv", feature_result.feature_audit, output_dir)
@@ -2371,6 +2517,7 @@ def run_research(*, refresh: bool = False, quick: bool = False, output_dir: Path
         features_count=len(feature_result.feature_cols),
         quick_mode=quick,
         warnings=data.warnings,
+        asset_config=asset_config,
     )
     from diagnostic_outputs import write_diagnostics
 

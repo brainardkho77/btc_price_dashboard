@@ -1,10 +1,10 @@
 {
-  "config_hash": "a4aee3992f1fcf1c",
-  "created_at": "2026-04-25T14:57:29+00:00",
-  "data_snapshot_hash": "fbdee3b41dad7313",
-  "end_date": "2026-04-25",
-  "features_count": 122,
-  "git_commit": "5949c7630498a18935ea38c78787faaf23f34a4d",
+  "config_hash": "a2d4c87de2d3c126",
+  "created_at": "2026-04-27T10:49:50+00:00",
+  "data_snapshot_hash": "2adfbb2b6485d9da",
+  "end_date": "2026-04-27",
+  "features_count": 134,
+  "git_commit": "cca806916755f55dd911ffe9c3a7cb4cc31268fa",
   "models_run": [
     "buy_hold_direction",
     "momentum_30d",
@@ -25,10 +25,15 @@
   "platform": "macOS-15.1.1-arm64-arm-64bit",
   "python_version": "3.9.6 (default, Nov 11 2024, 03:15:38)  [Clang 16.0.0 (clang-1600.0.26.6)]",
   "quick_mode": false,
-  "run_id": "btc_research_20260425T145729Z",
+  "run_id": "btc_research_20260427T104950Z",
   "schema_version": "1.0",
   "start_date": "2015-01-01",
   "warnings": [
+    "Recovered btc_open_interest.csv from Binance public data archive with 2065 daily rows from 2020-09-01 to 2026-04-27.",
+    "Recovered btc_long_short_ratio.csv from Binance public data archive with 2046 daily rows from 2020-09-01 to 2026-04-27.",
+    "Recovered btc_taker_buy_sell_ratio.csv from Binance public data archive with 1937 daily rows from 2020-09-01 to 2026-04-27.",
+    "Binance public data archive did not provide funding_rate; btc_funding.csv remains skipped.",
+    "Binance public data archive did not provide basis; btc_basis.csv remains skipped.",
     "FRED and Coin Metrics are revised historical data unless point-in-time vintage data is added."
   ]
 }

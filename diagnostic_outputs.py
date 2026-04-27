@@ -514,7 +514,9 @@ def derivatives_coverage(run_id: str, raw: pd.DataFrame, feature_result, availab
         cols = [col for col in spec["columns"] if col in raw.columns]
         raw_missing = float(raw[cols].isna().mean().mean()) if cols else 1.0
         used = False
-        if not audit.empty and cols:
+        record_worked = str(record["status"]) == "worked"
+        record_used = bool(record.get("is_used_in_model", False))
+        if record_worked and record_used and not audit.empty and cols:
             used = bool(audit[(audit["raw_metric"].isin(cols)) & (audit["used_in_model"] == True)].shape[0])
         rows.append(
             {
@@ -525,7 +527,7 @@ def derivatives_coverage(run_id: str, raw: pd.DataFrame, feature_result, availab
                 "rows": int(record.get("rows", 0)),
                 "first_date": record.get("first_date", ""),
                 "last_date": record.get("last_date", ""),
-                "missing_pct": raw_missing if str(record["status"]) == "worked" else 1.0,
+                "missing_pct": raw_missing if record_worked else 1.0,
                 "used_in_model": used,
                 "failure_reason": record.get("failure_reason", ""),
             }

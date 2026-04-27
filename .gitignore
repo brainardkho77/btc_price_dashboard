@@ -5,3 +5,8 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+data_cache/binance_archive_metrics/
+data_cache/binance_archive_metrics_daily.csv
+data_cache/binance_open_interest.csv
+data_cache/binance_long_short_ratio.csv
+data_cache/binance_taker_buy_sell_ratio.csv

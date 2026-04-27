@@ -53,6 +53,7 @@ class ResearchConfig:
     permutation_iterations: int = 500
     quick_permutation_iterations: int = 150
     min_feature_valid_ratio: float = 0.55
+    min_derivative_feature_valid_ratio: float = 0.45
     release_delays_days: Dict[str, int] = field(default_factory=lambda: dict(RELEASE_DELAYS_DAYS))
     first_model_set: List[str] = field(default_factory=lambda: ["logistic_linear", "hgb", "random_forest"])
     baseline_models: List[str] = field(

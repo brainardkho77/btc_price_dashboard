@@ -7,10 +7,13 @@ import platform
 import subprocess
 import sys
 import time
+import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
@@ -34,6 +37,10 @@ ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs"
 MANUAL_DATA_DIR = ROOT / "data" / "manual"
 BINANCE_RAW_CACHE_DIR = CACHE_DIR / "binance_raw"
+BINANCE_ARCHIVE_CACHE_DIR = CACHE_DIR / "binance_archive_metrics"
+BINANCE_ARCHIVE_BUCKET_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
+BINANCE_ARCHIVE_DOWNLOAD_URL = "https://data.binance.vision"
+BINANCE_ARCHIVE_METRICS_PREFIX = "data/futures/um/daily/metrics/BTCUSDT/"
 SCHEMA_VERSION = "1.0"
 
 BASELINE_MODELS = {"buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"}
@@ -112,27 +119,21 @@ MANUAL_DERIVATIVE_SPECS: Dict[str, ManualDerivativeSpec] = {
         dataset="binance_long_short_ratio",
         metric="long_short_ratio",
         filename="btc_long_short_ratio.csv",
-        required_columns=("date", "long_short_ratio", "long_account", "short_account"),
+        required_columns=("date", "long_short_ratio"),
         rename_map={
             "long_short_ratio": "binance_long_short_ratio",
-            "long_account": "binance_long_account",
-            "short_account": "binance_short_account",
         },
         positive_columns=("long_short_ratio",),
-        bounded_columns=(("long_account", 0.0, 1.0), ("short_account", 0.0, 1.0)),
     ),
     "binance_taker_buy_sell_ratio": ManualDerivativeSpec(
         dataset="binance_taker_buy_sell_ratio",
         metric="taker_buy_sell_ratio",
         filename="btc_taker_buy_sell_ratio.csv",
-        required_columns=("date", "taker_buy_sell_ratio", "taker_buy_volume", "taker_sell_volume"),
+        required_columns=("date", "taker_buy_sell_ratio"),
         rename_map={
             "taker_buy_sell_ratio": "binance_taker_buy_sell_ratio",
-            "taker_buy_volume": "binance_taker_buy_volume",
-            "taker_sell_volume": "binance_taker_sell_volume",
         },
         positive_columns=("taker_buy_sell_ratio",),
-        nonnegative_columns=("taker_buy_volume", "taker_sell_volume"),
     ),
     "binance_basis": ManualDerivativeSpec(
         dataset="binance_basis",
@@ -365,26 +366,50 @@ def _load_derivative_source(
         return (manual_result.frame if manual_used else None), records
 
     api_frame: Optional[pd.DataFrame] = None
+    api_error = ""
     try:
         fetched = fetcher()
         if fetched is None or fetched.empty:
             raise ValueError("Binance endpoint returned no rows")
         api_frame = fetched
-        records.append(_availability_record(run_id, generated_at, api_spec, "worked", api_frame, used_override=True))
     except Exception as exc:
+        api_error = str(exc)[:500]
+
+    manual_result = validate_manual_derivative_dataset(dataset)
+    manual_valid = manual_result.status == "worked" and manual_result.frame is not None
+    manual_used = False
+    if manual_valid and api_frame is None:
+        manual_used = True
+    elif manual_valid and api_frame is not None:
+        api_first = api_frame.index.min()
+        manual_first = manual_result.frame.index.min()
+        manual_rows = len(manual_result.frame)
+        api_rows = len(api_frame)
+        manual_used = bool(manual_rows > max(api_rows * 3, api_rows + 365) or manual_first < api_first - pd.Timedelta(days=180))
+
+    if api_frame is not None:
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                api_spec,
+                "worked",
+                api_frame,
+                failure_reason="Valid manual CSV had broader historical coverage and was used in model." if manual_used else "",
+                used_override=not manual_used,
+            )
+        )
+    else:
         records.append(
             _availability_record(
                 run_id,
                 generated_at,
                 api_spec,
                 "failed",
-                failure_reason=str(exc)[:500],
+                failure_reason=api_error,
                 used_override=False,
             )
         )
-
-    manual_result = validate_manual_derivative_dataset(dataset)
-    manual_used = api_frame is None and manual_result.status == "worked" and manual_result.frame is not None
     records.append(
         _availability_record(
             run_id,
@@ -396,12 +421,12 @@ def _load_derivative_source(
             used_override=manual_used,
         )
     )
-    if api_frame is not None:
-        return api_frame, records
     if manual_used:
         print(f"[binance] using validated manual fallback {manual_result.spec.filename}")
         _write_cached_dataset(dataset, manual_result.frame)
         return manual_result.frame, records
+    if api_frame is not None:
+        return api_frame, records
     return None, records
 
 
@@ -548,11 +573,184 @@ def _write_binance_raw_cache(dataset: str, params: dict, payload: object) -> Non
     )
 
 
+def _list_binance_archive_metric_keys() -> List[str]:
+    keys: List[str] = []
+    continuation: Optional[str] = None
+    while True:
+        params = {
+            "list-type": "2",
+            "prefix": BINANCE_ARCHIVE_METRICS_PREFIX,
+            "max-keys": 1000,
+        }
+        if continuation:
+            params["continuation-token"] = continuation
+        response = requests.get(BINANCE_ARCHIVE_BUCKET_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=60)
+        response.raise_for_status()
+        root = ElementTree.fromstring(response.text)
+        namespace = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+        for key_node in root.findall("s3:Contents/s3:Key", namespace):
+            key = key_node.text or ""
+            if key.endswith(".zip") and "/BTCUSDT-metrics-" in key:
+                keys.append(key)
+        truncated = (root.findtext("s3:IsTruncated", default="false", namespaces=namespace) or "false").lower() == "true"
+        continuation = root.findtext("s3:NextContinuationToken", default="", namespaces=namespace) or None
+        if not truncated or not continuation:
+            break
+    return sorted(set(keys))
+
+
+def _download_binance_archive_key(key: str, *, refresh: bool) -> Path:
+    BINANCE_ARCHIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = BINANCE_ARCHIVE_CACHE_DIR / Path(key).name
+    # Binance archive files are immutable daily snapshots; keep local copies and
+    # only download files that are not already cached.
+    if path.exists() and path.stat().st_size > 0:
+        return path
+    url = f"{BINANCE_ARCHIVE_DOWNLOAD_URL}/{key}"
+    last_error: Optional[Exception] = None
+    for attempt in range(4):
+        try:
+            response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=60)
+            if response.status_code in {418, 429} and attempt < 3:
+                retry_after = response.headers.get("Retry-After")
+                sleep_seconds = float(retry_after) if retry_after and retry_after.replace(".", "", 1).isdigit() else min(30, 2 ** (attempt + 2))
+                print(f"[binance-archive] rate limited, retrying in {sleep_seconds:.1f}s: {Path(key).name}")
+                time.sleep(sleep_seconds)
+                continue
+            response.raise_for_status()
+            path.write_bytes(response.content)
+            return path
+        except Exception as exc:
+            last_error = exc
+            if attempt < 3:
+                sleep_seconds = min(30, 2 ** (attempt + 1))
+                print(f"[binance-archive] download retry in {sleep_seconds}s: {Path(key).name} {exc}")
+                time.sleep(sleep_seconds)
+    raise RuntimeError(f"Binance archive download failed for {key}: {last_error}")
+
+
+def _parse_binance_archive_zip(path: Path) -> pd.DataFrame:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = [name for name in archive.namelist() if name.endswith(".csv")]
+            if not names:
+                return pd.DataFrame()
+            with archive.open(names[0]) as handle:
+                frame = pd.read_csv(handle)
+    except zipfile.BadZipFile:
+        path.unlink(missing_ok=True)
+        raise
+    if frame.empty or "create_time" not in frame:
+        return pd.DataFrame()
+    frame["date"] = pd.to_datetime(frame["create_time"], errors="coerce", utc=True).dt.tz_localize(None).dt.normalize()
+    numeric_columns = [
+        "sum_open_interest",
+        "sum_open_interest_value",
+        "count_long_short_ratio",
+        "sum_taker_long_short_vol_ratio",
+    ]
+    available = [col for col in numeric_columns if col in frame.columns]
+    if not available:
+        return pd.DataFrame()
+    for col in available:
+        frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    return frame.groupby("date", as_index=True)[available].mean().sort_index()
+
+
+def fetch_binance_archive_metrics(*, refresh: bool) -> pd.DataFrame:
+    cached = _read_cached_dataset("binance_archive_metrics_daily")
+    if cached is not None and not cached.empty and not refresh:
+        return cached
+    keys = _list_binance_archive_metric_keys()
+    if not keys:
+        raise RuntimeError("Binance public data archive returned no BTCUSDT metric keys.")
+
+    frames: List[pd.DataFrame] = []
+    failures: List[str] = []
+    total = len(keys)
+    print(f"[binance-archive] found {total} daily BTCUSDT metrics files")
+    max_workers = 8
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_key = {executor.submit(_download_binance_archive_key, key, refresh=refresh): key for key in keys}
+        for idx, future in enumerate(as_completed(future_to_key), start=1):
+            key = future_to_key[future]
+            try:
+                path = future.result()
+                parsed = _parse_binance_archive_zip(path)
+                if not parsed.empty:
+                    frames.append(parsed)
+            except Exception as exc:
+                failures.append(f"{Path(key).name}: {exc}")
+            if idx == 1 or idx % 250 == 0 or idx == total:
+                print(f"[binance-archive] processed {idx}/{total} files")
+
+    if not frames:
+        detail = "; ".join(failures[:3])
+        raise RuntimeError(f"Binance public data archive metrics produced no rows. {detail}")
+    if failures:
+        print(f"[binance-archive] skipped {len(failures)} files with parse/download failures")
+    daily = pd.concat(frames).sort_index()
+    daily = daily[~daily.index.duplicated(keep="last")]
+    return _write_cached_dataset("binance_archive_metrics_daily", daily)
+
+
+def recover_binance_archive_manual_csvs(*, refresh: bool) -> List[str]:
+    metrics = fetch_binance_archive_metrics(refresh=refresh)
+    warnings: List[str] = []
+    conversions = {
+        "binance_open_interest": {
+            "columns": {
+                "sum_open_interest": "sum_open_interest",
+                "sum_open_interest_value": "sum_open_interest_value",
+            },
+        },
+        "binance_long_short_ratio": {
+            "columns": {
+                "count_long_short_ratio": "long_short_ratio",
+            },
+        },
+        "binance_taker_buy_sell_ratio": {
+            "columns": {
+                "sum_taker_long_short_vol_ratio": "taker_buy_sell_ratio",
+            },
+        },
+    }
+    for dataset, conversion in conversions.items():
+        spec = MANUAL_DERIVATIVE_SPECS[dataset]
+        source_columns = list(conversion["columns"].keys())
+        if not all(col in metrics.columns for col in source_columns):
+            warnings.append(f"Binance archive lacked required columns for {dataset}; manual CSV was not updated.")
+            continue
+        out = metrics[source_columns].rename(columns=conversion["columns"]).dropna(how="all").copy()
+        if out.empty:
+            warnings.append(f"Binance archive had no usable rows for {dataset}; manual CSV was not updated.")
+            continue
+        out.index.name = "date"
+        manual_path = MANUAL_DATA_DIR / spec.filename
+        MANUAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        out.reset_index().to_csv(manual_path, index=False)
+        result = validate_manual_derivative_csv(manual_path, spec)
+        if result.status != "worked":
+            warnings.append(f"Recovered {spec.filename} failed validation: {result.failure_reason}")
+        else:
+            warnings.append(
+                f"Recovered {spec.filename} from Binance public data archive with {len(result.frame)} daily rows "
+                f"from {date_str(result.frame.index.min())} to {date_str(result.frame.index.max())}."
+            )
+    for dataset in ["binance_funding_rate", "binance_basis"]:
+        spec = MANUAL_DERIVATIVE_SPECS[dataset]
+        result = validate_manual_derivative_dataset(dataset)
+        if result.status != "worked":
+            warnings.append(f"Binance public data archive did not provide {spec.metric}; {spec.filename} remains {result.status}.")
+    return warnings
+
+
 def _fetch_binance_json(endpoint: str, params: dict, *, dataset: str) -> list:
     health = _binance_health_message()
-    attempts = 3 if health == "ok" else 1
+    attempts = 4 if health == "ok" else 1
+    timeout = 45 if health == "ok" else 12
     try:
-        payload = _request_json_with_retries(endpoint, params, attempts=attempts, timeout=25)
+        payload = _request_json_with_retries(endpoint, params, attempts=attempts, timeout=timeout)
     except Exception as exc:
         raise RuntimeError(f"{exc}; health={health}") from exc
     _write_binance_raw_cache(dataset, params, payload)
@@ -652,12 +850,11 @@ def validate_manual_derivative_dataset(dataset: str) -> ManualCsvResult:
 
 def _manual_source_spec(dataset: str) -> SourceSpec:
     spec = MANUAL_DERIVATIVE_SPECS[dataset]
-    source_spec = _source_spec(dataset)
     return SourceSpec(
         source="manual_csv",
         endpoint=str(MANUAL_DATA_DIR / spec.filename),
         dataset=dataset,
-        requested_fields=source_spec.requested_fields,
+        requested_fields=[col for col in spec.required_columns if col != "date"],
         source_group="manual_csv",
         is_used_in_model=False,
     )
@@ -848,6 +1045,12 @@ def load_research_data(
         if frame is not None and not frame.empty:
             frames.append(frame)
 
+    if refresh and not quick:
+        try:
+            warnings.extend(recover_binance_archive_manual_csvs(refresh=refresh))
+        except Exception as exc:
+            warnings.append(f"Binance public data archive recovery failed: {exc}")
+
     derivative_loaders: List[Tuple[str, Callable[[], pd.DataFrame]]] = [
         ("binance_funding_rate", fetch_binance_funding_rate),
         ("binance_open_interest", fetch_binance_open_interest),
@@ -1006,7 +1209,13 @@ def select_feature_columns(features: pd.DataFrame, config: ResearchConfig) -> Li
             continue
         if not pd.api.types.is_numeric_dtype(features[col]):
             continue
-        if float(features[col].notna().mean()) >= config.min_feature_valid_ratio:
+        valid_ratio = float(features[col].notna().mean())
+        required_ratio = (
+            config.min_derivative_feature_valid_ratio
+            if col.startswith("derivatives_")
+            else config.min_feature_valid_ratio
+        )
+        if valid_ratio >= required_ratio:
             cols.append(col)
     return cols
 
@@ -1554,7 +1763,7 @@ def decorate_summary(summary: dict, baselines: Dict[str, dict], horizon: int, is
     beats_momentum_30d = summary.get("directional_accuracy", -np.inf) > momentum_30.get("directional_accuracy", np.inf)
     beats_momentum_90d = summary.get("directional_accuracy", -np.inf) > momentum_90.get("directional_accuracy", np.inf)
     beats_random = summary.get("directional_accuracy", -np.inf) > random.get("directional_accuracy", np.inf)
-    relevant_momentum = beats_momentum_30d if horizon == 30 else beats_momentum_90d if horizon == 90 else True
+    beats_required_momentum = beats_momentum_30d and beats_momentum_90d
     best_baseline_return = max(
         [
             buy_hold.get("tc_adjusted_return", -np.inf),
@@ -1569,7 +1778,7 @@ def decorate_summary(summary: dict, baselines: Dict[str, dict], horizon: int, is
         and horizon != 180
         and sample_ok
         and beats_buy_hold_direction
-        and relevant_momentum
+        and beats_required_momentum
         and beats_random
         and beats_cost_return
         and summary.get("calibration_error", 1) <= 0.15

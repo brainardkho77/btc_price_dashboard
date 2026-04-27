@@ -1,24 +1,28 @@
 import numpy as np
 import pandas as pd
 import sys
+import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from research_config import ResearchConfig
 from research_pipeline import (
     MANUAL_DERIVATIVE_SPECS,
+    _parse_binance_archive_zip,
     apply_release_lags,
     build_features,
     build_target_frame,
     build_walk_forward_windows,
     compute_metrics,
+    decorate_summary,
     select_feature_columns,
     select_primary_model,
     validate_manual_derivative_csv,
     window_fingerprint,
 )
-from diagnostic_outputs import feature_group_for_feature
+from diagnostic_outputs import derivatives_coverage, feature_group_for_feature
 from schemas import DIAGNOSTIC_OUTPUT_SCHEMAS
 
 
@@ -201,6 +205,40 @@ def test_manual_derivative_csv_validation_statuses(tmp_path):
     assert validate_manual_derivative_csv(impossible, spec).status == "failed"
 
 
+def test_archive_ratio_manual_csvs_validate_with_real_available_columns(tmp_path):
+    long_short = tmp_path / "long_short.csv"
+    long_short.write_text("date,long_short_ratio\n2024-01-01,1.25\n2024-01-02,0.95\n", encoding="utf-8")
+    long_result = validate_manual_derivative_csv(long_short, MANUAL_DERIVATIVE_SPECS["binance_long_short_ratio"])
+    assert long_result.status == "worked"
+    assert list(long_result.frame.columns) == ["binance_long_short_ratio"]
+
+    taker = tmp_path / "taker.csv"
+    taker.write_text("date,taker_buy_sell_ratio\n2024-01-01,1.10\n2024-01-02,0.80\n", encoding="utf-8")
+    taker_result = validate_manual_derivative_csv(taker, MANUAL_DERIVATIVE_SPECS["binance_taker_buy_sell_ratio"])
+    assert taker_result.status == "worked"
+    assert list(taker_result.frame.columns) == ["binance_taker_buy_sell_ratio"]
+
+
+def test_binance_archive_zip_parser_aggregates_daily_metrics(tmp_path):
+    archive_path = tmp_path / "BTCUSDT-metrics-2024-01-01.zip"
+    csv = "\n".join(
+        [
+            "create_time,symbol,sum_open_interest,sum_open_interest_value,count_long_short_ratio,sum_taker_long_short_vol_ratio",
+            "2024-01-01 00:00:00,BTCUSDT,10,1000,1.20,0.80",
+            "2024-01-01 00:05:00,BTCUSDT,12,1200,1.40,1.00",
+            "",
+        ]
+    )
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("BTCUSDT-metrics-2024-01-01.csv", csv)
+    parsed = _parse_binance_archive_zip(archive_path)
+    assert len(parsed) == 1
+    assert parsed.iloc[0]["sum_open_interest"] == 11
+    assert parsed.iloc[0]["sum_open_interest_value"] == 1100
+    assert np.isclose(parsed.iloc[0]["count_long_short_ratio"], 1.3)
+    assert np.isclose(parsed.iloc[0]["sum_taker_long_short_vol_ratio"], 0.9)
+
+
 def test_derivatives_impact_uses_identical_windows():
     config = ResearchConfig(quick_initial_train_days=365, min_feature_valid_ratio=0.40)
     raw = synthetic_research_raw(rows=950)
@@ -223,8 +261,83 @@ def test_no_derivative_features_when_raw_derivatives_missing():
     assert not any(col.startswith("derivatives_") for col in feature_result.feature_cols)
 
 
+def test_derivative_feature_threshold_allows_valid_partial_history():
+    config = ResearchConfig(min_feature_valid_ratio=0.55, min_derivative_feature_valid_ratio=0.45)
+    features = pd.DataFrame(
+        {
+            "derivatives_open_interest": [np.nan] * 55 + list(range(45)),
+            "macro_sparse": [np.nan] * 55 + list(range(45)),
+        }
+    )
+    selected = select_feature_columns(features, config)
+    assert "derivatives_open_interest" in selected
+    assert "macro_sparse" not in selected
+
+
 def test_no_valid_edge_selection_fallback_for_empty_leaderboard():
     selected, reason, reliability = select_primary_model(pd.DataFrame())
     assert selected == "no_valid_edge"
     assert "No 30d official model" in reason
     assert reliability == "Low confidence"
+
+
+def test_useful_model_must_beat_both_momentum_baselines():
+    summary = {
+        "sample_count": 99,
+        "directional_accuracy": 0.54,
+        "tc_adjusted_return": 2.0,
+        "calibration_error": 0.10,
+    }
+    baselines = {
+        "buy_hold_direction": {"directional_accuracy": 0.50, "tc_adjusted_return": 1.0},
+        "momentum_30d": {"directional_accuracy": 0.51, "tc_adjusted_return": 1.0},
+        "momentum_90d": {"directional_accuracy": 0.56, "tc_adjusted_return": 1.0},
+        "random_permutation": {"directional_accuracy": 0.44, "tc_adjusted_return": 0.0},
+    }
+    decorated = decorate_summary(summary, baselines, 30, True, "random_forest")
+    assert decorated["beats_momentum_30d"] is True
+    assert decorated["beats_momentum_90d"] is False
+    assert decorated["useful_model"] is False
+    assert decorated["selection_eligible"] is False
+
+
+def test_derivatives_coverage_does_not_mark_failed_source_used():
+    dates = pd.date_range("2024-01-01", periods=3, freq="D")
+    raw = pd.DataFrame({"binance_sum_open_interest": [1.0, 2.0, 3.0]}, index=dates)
+    feature_result = SimpleNamespace(
+        feature_audit=pd.DataFrame(
+            {
+                "raw_metric": ["binance_sum_open_interest"],
+                "used_in_model": [True],
+            }
+        )
+    )
+    availability = pd.DataFrame(
+        [
+            {
+                "source": "Binance USD-M Futures",
+                "dataset": "binance_open_interest",
+                "status": "failed",
+                "rows": 0,
+                "first_date": "",
+                "last_date": "",
+                "is_used_in_model": False,
+                "failure_reason": "timeout",
+            },
+            {
+                "source": "manual_csv",
+                "dataset": "binance_open_interest",
+                "status": "worked",
+                "rows": 3,
+                "first_date": "2024-01-01",
+                "last_date": "2024-01-03",
+                "is_used_in_model": True,
+                "failure_reason": "",
+            },
+        ]
+    )
+    coverage = derivatives_coverage("run", raw, feature_result, availability)
+    failed = coverage[coverage["source"] == "Binance USD-M Futures"].iloc[0]
+    manual = coverage[coverage["source"] == "manual_csv"].iloc[0]
+    assert bool(failed["used_in_model"]) is False
+    assert bool(manual["used_in_model"]) is True

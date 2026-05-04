@@ -10,6 +10,8 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from research_config import ResearchConfig, build_source_specs, get_asset_config
 from research_pipeline import (
     MANUAL_DERIVATIVE_SPECS,
+    _is_monthly_polymarket_event,
+    _parse_polymarket_threshold,
     _parse_binance_archive_zip,
     apply_release_lags,
     build_features,
@@ -162,6 +164,7 @@ def test_future_and_target_columns_do_not_enter_feature_cols():
 def test_non_price_external_features_are_lagged_conservatively():
     config = ResearchConfig()
     raw = synthetic_research_raw(rows=80)
+    raw["polymarket_upside_probability"] = np.linspace(0.2, 0.8, len(raw))
     released = apply_release_lags(raw, config)
     assert released["btc_close"].iloc[10] == raw["btc_close"].iloc[10]
     assert released["binance_funding_rate"].iloc[10] == raw["binance_funding_rate"].iloc[9]
@@ -169,6 +172,7 @@ def test_non_price_external_features_are_lagged_conservatively():
     assert released["us_10y_yield"].iloc[10] == raw["us_10y_yield"].iloc[8]
     assert released["m2_money_supply"].iloc[40] == raw["m2_money_supply"].iloc[10]
     assert released["cm_active_addresses"].iloc[10] == raw["cm_active_addresses"].iloc[8]
+    assert released["polymarket_upside_probability"].iloc[10] == raw["polymarket_upside_probability"].iloc[9]
 
 
 def test_monthly_date_alignment_for_30d_official_windows():
@@ -220,11 +224,15 @@ def test_diagnostic_schemas_include_required_outputs():
         "derivatives_coverage.csv",
         "derivatives_impact.csv",
         "feature_group_stability.csv",
+        "polymarket_coverage.csv",
+        "polymarket_feature_diagnostics.csv",
+        "polymarket_impact.csv",
     ]:
         assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
     assert "balanced_accuracy" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
     assert "calibration_error" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
     assert "beats_momentum_90d" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
+    assert "passes_official_gates" in DIAGNOSTIC_OUTPUT_SCHEMAS["polymarket_impact.csv"]
 
 
 def test_feature_group_mapping_is_stable():
@@ -235,6 +243,48 @@ def test_feature_group_mapping_is_stable():
     assert feature_group_for_feature("stablecoins_supply_chg_30d") == "stablecoins_only"
     assert feature_group_for_feature("onchain_mvrv") == "onchain_only"
     assert feature_group_for_feature("derivatives_funding_rate") == "derivatives_only"
+    assert feature_group_for_feature("polymarket_ladder_skew") == "prediction_markets_only"
+
+
+def test_polymarket_threshold_parsing_and_monthly_event_filter():
+    assert _parse_polymarket_threshold("Will Bitcoin reach $115,000 in May?") == 115000
+    assert _parse_polymarket_threshold("Will Solana dip to $75 in May?") == 75
+    assert _parse_polymarket_threshold("Will Bitcoin reach $150k in May?") == 150000
+    monthly = {
+        "title": "What price will Bitcoin hit in May?",
+        "startDate": "2026-05-01T00:00:00Z",
+        "endDate": "2026-06-01T04:00:00Z",
+    }
+    annual = {
+        "title": "What price will Bitcoin hit in 2026?",
+        "startDate": "2025-11-01T00:00:00Z",
+        "endDate": "2027-01-01T00:00:00Z",
+    }
+    weekly = {
+        "title": "Bitcoin above ___ on May 4?",
+        "startDate": "2026-05-01T00:00:00Z",
+        "endDate": "2026-05-04T00:00:00Z",
+    }
+    assert _is_monthly_polymarket_event(monthly, "Bitcoin") is True
+    assert _is_monthly_polymarket_event(annual, "Bitcoin") is False
+    assert _is_monthly_polymarket_event(weekly, "Bitcoin") is False
+
+
+def test_polymarket_features_are_quarantined_from_official_feature_cols():
+    config = ResearchConfig(min_feature_valid_ratio=0.40)
+    raw = synthetic_research_raw(rows=950)
+    raw["polymarket_implied_median_price"] = raw["btc_close"] * 1.05
+    raw["polymarket_upside_probability"] = 0.55
+    raw["polymarket_downside_probability"] = 0.35
+    raw["polymarket_ladder_skew"] = 0.20
+    raw["polymarket_ladder_width"] = 0.25
+    raw["polymarket_market_count"] = 12
+    feature_result = build_features(raw, config)
+    assert any(col.startswith("polymarket_") for col in feature_result.features.columns)
+    assert not any(col.startswith("polymarket_") for col in feature_result.feature_cols)
+    audit = feature_result.feature_audit[feature_result.feature_audit["feature_name"].str.startswith("polymarket_")]
+    assert not audit.empty
+    assert audit["used_in_model"].eq(False).all()
 
 
 def test_manual_derivative_csv_validation_statuses(tmp_path):

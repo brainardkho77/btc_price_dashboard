@@ -1,10 +1,10 @@
 {
   "asset_id": "btc",
   "asset_name": "BTC",
-  "config_hash": "df1e0d04e35efe70",
-  "created_at": "2026-04-27T22:24:18+00:00",
-  "data_snapshot_hash": "2c5663c46946e97a",
-  "end_date": "2026-04-27",
+  "config_hash": "b00f3771b3beac7a",
+  "created_at": "2026-05-04T05:11:47+00:00",
+  "data_snapshot_hash": "3d255f09d31991b9",
+  "end_date": "2026-05-04",
   "features_count": 134,
   "git_commit": "",
   "models_run": [
@@ -27,13 +27,14 @@
   "platform": "macOS-15.1.1-arm64-arm-64bit",
   "python_version": "3.9.6 (default, Nov 11 2024, 03:15:38)  [Clang 16.0.0 (clang-1600.0.26.6)]",
   "quick_mode": false,
-  "run_id": "btc_research_20260427T222418Z",
+  "run_id": "btc_research_20260504T051147Z",
   "schema_version": "1.0",
   "start_date": "2015-01-01",
   "warnings": [
-    "Recovered btc_open_interest.csv from Binance public data archive with 2065 daily rows from 2020-09-01 to 2026-04-27.",
-    "Recovered btc_long_short_ratio.csv from Binance public data archive with 2046 daily rows from 2020-09-01 to 2026-04-27.",
-    "Recovered btc_taker_buy_sell_ratio.csv from Binance public data archive with 1937 daily rows from 2020-09-01 to 2026-04-27.",
+    "Polymarket monthly ladder data is loaded for diagnostics only; it is excluded from official model selection unless future validation gates pass.",
+    "Recovered btc_open_interest.csv from Binance public data archive with 2071 daily rows from 2020-09-01 to 2026-05-03.",
+    "Recovered btc_long_short_ratio.csv from Binance public data archive with 2052 daily rows from 2020-09-01 to 2026-05-03.",
+    "Recovered btc_taker_buy_sell_ratio.csv from Binance public data archive with 1943 daily rows from 2020-09-01 to 2026-05-03.",
     "Binance public data archive did not provide funding_rate; btc_funding.csv remains skipped.",
     "Binance public data archive did not provide basis; btc_basis.csv remains skipped.",
     "FRED and Coin Metrics are revised historical data unless point-in-time vintage data is added."

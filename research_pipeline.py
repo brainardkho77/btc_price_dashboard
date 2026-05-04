@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -49,6 +50,8 @@ BINANCE_ARCHIVE_CACHE_DIR = CACHE_DIR / "binance_archive_metrics"
 BINANCE_ARCHIVE_BUCKET_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 BINANCE_ARCHIVE_DOWNLOAD_URL = "https://data.binance.vision"
 BINANCE_ARCHIVE_METRICS_PREFIX = "data/futures/um/daily/metrics/BTCUSDT/"
+POLYMARKET_GAMMA_SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
+POLYMARKET_CLOB_PRICE_HISTORY_URL = "https://clob.polymarket.com/prices-history"
 SCHEMA_VERSION = "1.0"
 
 BASELINE_MODELS = {"buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"}
@@ -532,6 +535,207 @@ def fetch_coingecko_asset_usd(asset: AssetConfig, start_date: str, end_date: Opt
 
 def fetch_coingecko_btc_usd(start_date: str, end_date: Optional[str]) -> pd.DataFrame:
     return fetch_coingecko_asset_usd(get_asset_config("btc"), start_date, end_date)
+
+
+def _polymarket_asset_search_name(asset: AssetConfig) -> str:
+    if asset.asset_id == "btc":
+        return "Bitcoin"
+    if asset.asset_id == "sol":
+        return "Solana"
+    return asset.display_name
+
+
+def _json_list(value: object) -> List[object]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def _parse_polymarket_threshold(question: str) -> Optional[float]:
+    match = re.search(r"\$([0-9][0-9,]*(?:\.\d+)?)([kKmM]?)", question)
+    if not match:
+        return None
+    value = float(match.group(1).replace(",", ""))
+    suffix = match.group(2).lower()
+    if suffix == "k":
+        value *= 1_000
+    elif suffix == "m":
+        value *= 1_000_000
+    return value
+
+
+def _is_monthly_polymarket_event(event: dict, asset_name: str) -> bool:
+    title = str(event.get("title") or "")
+    if asset_name.lower() not in title.lower() and not (asset_name == "Bitcoin" and "btc" in title.lower()):
+        return False
+    if not title.lower().startswith("what price will"):
+        return False
+    if re.search(r"\b20\d{2}\b", title):
+        return False
+    start = pd.to_datetime(event.get("startDate"), errors="coerce", utc=True)
+    end = pd.to_datetime(event.get("endDate"), errors="coerce", utc=True)
+    if pd.isna(start) or pd.isna(end):
+        return False
+    duration_days = (end - start).total_seconds() / 86400
+    return 20 <= duration_days <= 45
+
+
+def _polymarket_monthly_events(asset: AssetConfig) -> List[dict]:
+    asset_name = _polymarket_asset_search_name(asset)
+    params = {
+        "q": f"What price will {asset_name} hit in",
+        "limit_per_type": 75,
+        "events_status": "all",
+        "keep_closed_markets": 1,
+    }
+    response = requests.get(POLYMARKET_GAMMA_SEARCH_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=30)
+    response.raise_for_status()
+    payload = response.json()
+    events = payload.get("events") if isinstance(payload, dict) else []
+    if not isinstance(events, list):
+        return []
+    filtered = [event for event in events if isinstance(event, dict) and _is_monthly_polymarket_event(event, asset_name)]
+    return sorted(filtered, key=lambda event: str(event.get("endDate") or ""))
+
+
+def _polymarket_yes_token_id(market: dict) -> Optional[str]:
+    outcomes = [str(item).lower() for item in _json_list(market.get("outcomes"))]
+    token_ids = [str(item) for item in _json_list(market.get("clobTokenIds"))]
+    if not token_ids:
+        return None
+    try:
+        yes_index = outcomes.index("yes")
+    except ValueError:
+        yes_index = 0
+    if yes_index >= len(token_ids):
+        return None
+    return token_ids[yes_index]
+
+
+def _fetch_polymarket_price_history(token_id: str) -> pd.DataFrame:
+    response = requests.get(
+        POLYMARKET_CLOB_PRICE_HISTORY_URL,
+        params={"market": token_id, "interval": "max", "fidelity": 1440},
+        headers={"User-Agent": USER_AGENT},
+        timeout=25,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    history = payload.get("history") if isinstance(payload, dict) else []
+    if not history:
+        return pd.DataFrame(columns=["date", "probability"])
+    frame = pd.DataFrame(history)
+    if "t" not in frame or "p" not in frame:
+        return pd.DataFrame(columns=["date", "probability"])
+    frame["date"] = pd.to_datetime(frame["t"], unit="s", utc=True).dt.tz_localize(None).dt.normalize()
+    frame["probability"] = pd.to_numeric(frame["p"], errors="coerce").clip(0, 1)
+    return frame[["date", "probability"]].dropna().sort_values("date")
+
+
+def fetch_polymarket_asset_monthly_ladders(asset: AssetConfig, price: pd.DataFrame, *, quick: bool = False) -> pd.DataFrame:
+    dataset = f"polymarket_{asset.asset_id}_monthly_ladders"
+    events = _polymarket_monthly_events(asset)
+    if quick and len(events) > 8:
+        events = events[-8:]
+    if not events:
+        raise RuntimeError(f"Polymarket returned no monthly {asset.display_name} price ladder events")
+    price_series = price["asset_close"].dropna().sort_index()
+    if price_series.empty:
+        raise RuntimeError("Polymarket feature build requires asset_close price history")
+
+    rows: List[pd.DataFrame] = []
+    market_count = 0
+    failures: List[str] = []
+    for event in events:
+        event_end = pd.to_datetime(event.get("endDate"), errors="coerce", utc=True)
+        if pd.isna(event_end):
+            continue
+        event_end_date = event_end.tz_localize(None).normalize()
+        markets = event.get("markets") or []
+        if not isinstance(markets, list):
+            continue
+        for market in markets:
+            if not isinstance(market, dict):
+                continue
+            question = str(market.get("question") or "")
+            threshold = _parse_polymarket_threshold(question)
+            token_id = _polymarket_yes_token_id(market)
+            if threshold is None or token_id is None:
+                continue
+            direction = "down" if any(word in question.lower() for word in ["dip", "below"]) else "up"
+            try:
+                history = _fetch_polymarket_price_history(token_id)
+            except Exception as exc:
+                failures.append(f"{question[:80]}: {exc}")
+                continue
+            if history.empty:
+                continue
+            history = history[history["date"] < event_end_date].copy()
+            if history.empty:
+                continue
+            history["threshold"] = float(threshold)
+            history["direction"] = direction
+            history["market_id"] = str(market.get("id") or token_id)
+            rows.append(history)
+            market_count += 1
+            time.sleep(0.02)
+
+    if not rows:
+        detail = "; ".join(failures[:3])
+        raise RuntimeError(f"Polymarket monthly ladder histories produced no rows. {detail}")
+
+    quotes = pd.concat(rows, ignore_index=True).drop_duplicates(["date", "market_id"], keep="last")
+    quotes = quotes.sort_values(["date", "threshold"])
+    quote_dates = pd.DatetimeIndex(sorted(quotes["date"].unique()))
+    spot = price_series.reindex(price_series.index.union(quote_dates)).ffill().reindex(quote_dates)
+    out_rows = []
+    for date, group in quotes.groupby("date"):
+        spot_value = float(spot.get(date, np.nan))
+        if pd.isna(spot_value) or spot_value <= 0:
+            continue
+        group = group.dropna(subset=["threshold", "probability"]).copy()
+        if group.empty:
+            continue
+        up = group[(group["direction"] == "up") & (group["threshold"] > spot_value)]
+        down = group[(group["direction"] == "down") & (group["threshold"] < spot_value)]
+        if up.empty:
+            up = group[group["direction"] == "up"]
+        if down.empty:
+            down = group[group["direction"] == "down"]
+        nearest_up = up.iloc[(up["threshold"] - spot_value).abs().argsort().iloc[0]] if not up.empty else None
+        nearest_down = down.iloc[(down["threshold"] - spot_value).abs().argsort().iloc[0]] if not down.empty else None
+        median_row = group.iloc[(group["probability"] - 0.50).abs().argsort().iloc[0]]
+        upside_prob = float(nearest_up["probability"]) if nearest_up is not None else np.nan
+        downside_prob = float(nearest_down["probability"]) if nearest_down is not None else np.nan
+        up_threshold = float(nearest_up["threshold"]) if nearest_up is not None else np.nan
+        down_threshold = float(nearest_down["threshold"]) if nearest_down is not None else np.nan
+        out_rows.append(
+            {
+                "date": pd.Timestamp(date),
+                "polymarket_implied_median_price": float(median_row["threshold"]),
+                "polymarket_upside_probability": upside_prob,
+                "polymarket_downside_probability": downside_prob,
+                "polymarket_ladder_skew": upside_prob - downside_prob if pd.notna(upside_prob) and pd.notna(downside_prob) else np.nan,
+                "polymarket_ladder_width": (up_threshold - down_threshold) / spot_value if pd.notna(up_threshold) and pd.notna(down_threshold) else np.nan,
+                "polymarket_market_count": int(group["market_id"].nunique()),
+            }
+        )
+
+    frame = pd.DataFrame(out_rows)
+    if frame.empty:
+        raise RuntimeError("Polymarket aggregation produced no dated feature rows")
+    frame = frame.drop_duplicates("date", keep="last").set_index("date").sort_index()
+    frame["polymarket_event_count"] = int(len(events))
+    frame["polymarket_discovered_markets"] = int(market_count)
+    frame.attrs["polymarket_events"] = len(events)
+    frame.attrs["polymarket_markets"] = market_count
+    return _write_cached_dataset(dataset, frame)
 
 
 def fetch_defillama_stablecoins() -> pd.DataFrame:
@@ -1100,6 +1304,25 @@ def load_research_data(
             )
         )
 
+    frames: List[pd.DataFrame] = [price]
+    polymarket_dataset = f"polymarket_{asset.asset_id}_monthly_ladders"
+    polymarket, record = _load_source(
+        run_id,
+        generated_at,
+        polymarket_dataset,
+        lambda: fetch_polymarket_asset_monthly_ladders(asset, price, quick=quick),
+        quick=quick and not refresh,
+        allow_quick_fetch=True,
+        used_override=False,
+        source_specs=source_specs,
+    )
+    records.append(record)
+    if polymarket is not None and not polymarket.empty:
+        frames.append(polymarket)
+        warnings.append(
+            "Polymarket monthly ladder data is loaded for diagnostics only; it is excluded from official model selection unless future validation gates pass."
+        )
+
     loaders: List[Tuple[str, Callable[[], pd.DataFrame], bool]] = [
         ("yahoo_market_proxies", lambda: fetch_market_proxies(force=refresh), True),
         ("fred_macro", lambda: fetch_fred(force=refresh), True),
@@ -1109,7 +1332,6 @@ def load_research_data(
     if asset.enable_onchain:
         loaders.insert(2, (coinmetrics_dataset, lambda: fetch_coinmetrics(force=refresh, start=config.start_date), True))
 
-    frames: List[pd.DataFrame] = [price]
     for dataset, fetcher, allow_quick_fetch in loaders:
         frame, record = _load_source(
             run_id,
@@ -1249,6 +1471,8 @@ def raw_column_source_group(column: str) -> str:
         return "price"
     if column.startswith("binance_"):
         return "binance_derivatives"
+    if column.startswith("polymarket_"):
+        return "polymarket_prediction_markets"
     if column.startswith("stablecoin_"):
         return "stablecoins"
     if column.startswith("cm_"):
@@ -1319,6 +1543,25 @@ def add_research_external_features(released_raw: pd.DataFrame, out: pd.DataFrame
         out["stablecoins_supply_chg_90d"] = _safe_log(supply).diff(90)
         out["stablecoins_supply_z_365d"] = _zscore(supply, 365, 120)
 
+    if "polymarket_implied_median_price" in released_raw and "asset_close" in released_raw:
+        implied = pd.to_numeric(released_raw["polymarket_implied_median_price"], errors="coerce")
+        spot = pd.to_numeric(released_raw["asset_close"], errors="coerce")
+        out["polymarket_implied_median_gap"] = _safe_log(implied) - _safe_log(spot)
+    for column in [
+        "polymarket_upside_probability",
+        "polymarket_downside_probability",
+        "polymarket_ladder_skew",
+        "polymarket_ladder_width",
+        "polymarket_market_count",
+    ]:
+        if column not in released_raw:
+            continue
+        series = pd.to_numeric(released_raw[column], errors="coerce")
+        feature = column
+        out[feature] = series
+        out[f"{feature}_chg_7d"] = series.diff(7)
+        out[f"{feature}_z_30d"] = _zscore(series, 30, 10)
+
 
 def is_leaky_feature_name(column: str) -> bool:
     lowered = column.lower()
@@ -1329,6 +1572,8 @@ def select_feature_columns(features: pd.DataFrame, config: ResearchConfig) -> Li
     cols: List[str] = []
     for col in features.columns:
         if is_leaky_feature_name(col):
+            continue
+        if col.startswith("polymarket_"):
             continue
         if not pd.api.types.is_numeric_dtype(features[col]):
             continue
@@ -1347,6 +1592,9 @@ def _feature_source(feature: str) -> Tuple[str, str, str, int]:
     if feature.startswith("derivatives_"):
         raw = "binance_" + feature.replace("derivatives_", "").split("_chg_")[0].split("_z_")[0]
         return "binance_derivatives", raw, "derivatives transform", 1
+    if feature.startswith("polymarket_"):
+        raw = feature.split("_chg_")[0].split("_z_")[0]
+        return "polymarket_prediction_markets", raw, "prediction-market transform", 1
     if feature.startswith("stablecoins_"):
         return "stablecoins", "stablecoin_total_circulating_usd", "stablecoin transform", 1
     if feature.startswith("macro_m2_money_supply") or feature.startswith("macro_fed_balance_sheet"):

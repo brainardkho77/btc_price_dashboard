@@ -14,6 +14,7 @@ RELEASE_DELAYS_DAYS: Dict[str, int] = {
     "fred_macro_daily": 2,
     "coinmetrics_onchain": 2,
     "manual_csv": 1,
+    "polymarket_prediction_markets": 1,
 }
 
 MIN_SAMPLE_THRESHOLDS = {
@@ -248,6 +249,21 @@ def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
             dataset="defillama_stablecoins",
             requested_fields=["stablecoin_total_circulating_usd"],
             source_group="stablecoins",
+        ),
+        SourceSpec(
+            source="Polymarket Gamma/CLOB APIs",
+            endpoint="https://gamma-api.polymarket.com/public-search | https://clob.polymarket.com/prices-history",
+            dataset=f"polymarket_{asset.asset_id}_monthly_ladders",
+            requested_fields=[
+                "implied_median_price",
+                "upside_probability",
+                "downside_probability",
+                "ladder_skew",
+                "ladder_width",
+                "market_count",
+            ],
+            source_group="polymarket_prediction_markets",
+            is_used_in_model=False,
         ),
         SourceSpec(
             source="Manual CSV",

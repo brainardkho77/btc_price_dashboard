@@ -76,6 +76,9 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "derivatives_coverage": read_diagnostic("derivatives_coverage.csv"),
         "derivatives_impact": read_diagnostic("derivatives_impact.csv"),
         "feature_group_stability": read_diagnostic("feature_group_stability.csv"),
+        "polymarket_coverage": read_diagnostic("polymarket_coverage.csv"),
+        "polymarket_feature_diagnostics": read_diagnostic("polymarket_feature_diagnostics.csv"),
+        "polymarket_impact": read_diagnostic("polymarket_impact.csv"),
     }
     data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     data["diagnostic_warnings"] = diagnostic_warnings
@@ -184,6 +187,9 @@ regime_breakdown = outputs["regime_breakdown"]
 derivatives_coverage = outputs["derivatives_coverage"]
 derivatives_impact = outputs["derivatives_impact"]
 feature_group_stability = outputs["feature_group_stability"]
+polymarket_coverage = outputs["polymarket_coverage"]
+polymarket_feature_diagnostics = outputs["polymarket_feature_diagnostics"]
+polymarket_impact = outputs["polymarket_impact"]
 manifest = outputs["manifest"]
 asset_name = str(manifest.get("asset_name") or asset_config.display_name)
 
@@ -483,6 +489,56 @@ with data_tab:
     else:
         st.dataframe(
             derivatives_impact.style.format(
+                {
+                    "directional_accuracy": "{:.1%}",
+                    "balanced_accuracy": "{:.1%}",
+                    "brier_score": "{:.3f}",
+                    "calibration_error": "{:.3f}",
+                    "sharpe": "{:.2f}",
+                    "max_drawdown": "{:.1%}",
+                    "net_return": "{:.1%}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.subheader("Polymarket Prediction Market Diagnostics")
+    st.caption("Diagnostic only. These factors are not part of official model selection unless future validation gates pass.")
+    if polymarket_coverage.empty:
+        st.warning("No precomputed Polymarket coverage file is available.")
+    else:
+        st.dataframe(
+            polymarket_coverage.style.format({"missing_pct": "{:.1%}"}),
+            width="stretch",
+            hide_index=True,
+        )
+    if polymarket_feature_diagnostics.empty:
+        st.warning("No precomputed Polymarket feature diagnostics are available.")
+    else:
+        st.dataframe(
+            polymarket_feature_diagnostics.sort_values(
+                ["horizon", "information_coefficient"],
+                ascending=[True, False],
+                na_position="last",
+            ).style.format(
+                {
+                    "coverage_pct": "{:.1%}",
+                    "pearson_corr": "{:.3f}",
+                    "spearman_corr": "{:.3f}",
+                    "information_coefficient": "{:.3f}",
+                    "ic_t_stat": "{:.2f}",
+                    "ic_p_value": "{:.3f}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    if polymarket_impact.empty:
+        st.warning("No Polymarket impact comparison ran because no valid monthly ladder features were available.")
+    else:
+        st.dataframe(
+            polymarket_impact.style.format(
                 {
                     "directional_accuracy": "{:.1%}",
                     "balanced_accuracy": "{:.1%}",

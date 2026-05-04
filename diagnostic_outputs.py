@@ -45,6 +45,8 @@ def preserve_quick_baseline(output_dir: Path, refresh: bool) -> Optional[Path]:
 
 
 def feature_group_for_feature(feature: str) -> str:
+    if feature.startswith("polymarket_"):
+        return "prediction_markets_only"
     if feature.startswith("derivatives_"):
         return "derivatives_only"
     if feature.startswith("stablecoins_"):
@@ -69,6 +71,7 @@ def feature_group_columns(feature_cols: Sequence[str]) -> Dict[str, List[str]]:
         "stablecoins_only": [],
         "onchain_only": [],
         "derivatives_only": [],
+        "prediction_markets_only": [],
         "all_features": list(feature_cols),
     }
     for col in feature_cols:
@@ -225,6 +228,7 @@ def _predict_feature_set(
     config: ResearchConfig,
     *,
     quick: bool,
+    candidate_dates: Optional[pd.DatetimeIndex] = None,
 ) -> Dict[str, pd.DataFrame]:
     from research_pipeline import (
         build_target_frame,
@@ -235,6 +239,9 @@ def _predict_feature_set(
 
     target_frame = build_target_frame(raw, feature_result.features, feature_cols, horizon)
     windows = build_walk_forward_windows(target_frame, horizon, window_type, config, quick=quick)
+    if candidate_dates is not None:
+        allowed = set(pd.DatetimeIndex(candidate_dates))
+        windows = [window for window in windows if window.test_date in allowed]
     predictions_by_model: Dict[str, pd.DataFrame] = {}
     for baseline in config.baseline_models:
         preds = predict_baseline_windows(baseline, target_frame, windows, config)
@@ -264,6 +271,7 @@ def _score_feature_set(
     config: ResearchConfig,
     *,
     quick: bool,
+    candidate_dates: Optional[pd.DatetimeIndex] = None,
 ) -> Dict[str, dict]:
     from research_pipeline import BASELINE_MODELS, compute_metrics, decorate_summary
 
@@ -275,6 +283,7 @@ def _score_feature_set(
         window_type,
         config,
         quick=quick,
+        candidate_dates=candidate_dates,
     )
     if not predictions_by_model:
         return {}
@@ -476,6 +485,208 @@ def derivatives_impact(
                         "beats_momentum_30d": bool(summary.get("beats_momentum_30d", False)),
                         "beats_momentum_90d": bool(summary.get("beats_momentum_90d", False)),
                         "reliability_label": summary.get("reliability_label", "Low confidence"),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def polymarket_feature_columns(feature_result) -> List[str]:
+    cols = []
+    for col in feature_result.features.columns:
+        if col.startswith("polymarket_") and pd.api.types.is_numeric_dtype(feature_result.features[col]):
+            cols.append(col)
+    return cols
+
+
+def polymarket_coverage(run_id: str, raw: pd.DataFrame, feature_result, availability: pd.DataFrame) -> pd.DataFrame:
+    records = availability[availability["dataset"].astype(str).str.startswith("polymarket_")]
+    if records.empty:
+        return empty_diagnostic_frame("polymarket_coverage.csv")
+    audit = feature_result.feature_audit
+    poly_cols = [col for col in raw.columns if col.startswith("polymarket_")]
+    rows = []
+    for _, record in records.iterrows():
+        status = str(record.get("status", "skipped"))
+        raw_missing = float(raw[poly_cols].isna().mean().mean()) if poly_cols and status == "worked" else 1.0
+        used = False
+        if not audit.empty:
+            used = bool(audit[(audit["feature_name"].astype(str).str.startswith("polymarket_")) & (audit["used_in_model"] == True)].shape[0])
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": str(record["dataset"]).replace("polymarket_", "").replace("_monthly_ladders", ""),
+                "source": record.get("source", "Polymarket Gamma/CLOB APIs"),
+                "status": status,
+                "rows": int(record.get("rows", 0)),
+                "events": int(raw["polymarket_event_count"].max()) if "polymarket_event_count" in raw and raw["polymarket_event_count"].notna().any() else 0,
+                "markets": int(raw["polymarket_discovered_markets"].max()) if "polymarket_discovered_markets" in raw and raw["polymarket_discovered_markets"].notna().any() else int(raw["polymarket_market_count"].max()) if "polymarket_market_count" in raw and raw["polymarket_market_count"].notna().any() else 0,
+                "first_date": record.get("first_date", ""),
+                "last_date": record.get("last_date", ""),
+                "missing_pct": raw_missing,
+                "used_in_model": used,
+                "failure_reason": record.get("failure_reason", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def polymarket_feature_diagnostics(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+) -> pd.DataFrame:
+    from research_pipeline import build_target_frame, build_walk_forward_windows
+
+    poly_cols = polymarket_feature_columns(feature_result)
+    if not poly_cols:
+        return empty_diagnostic_frame("polymarket_feature_diagnostics.csv")
+    asset_id = run_id.split("_research", 1)[0] if "_research" in run_id else ""
+    rows = []
+    all_cols = list(dict.fromkeys(list(feature_result.feature_cols) + poly_cols))
+    for horizon, window_type in [(30, "official_monthly"), (90, "official_quarterly")]:
+        target_frame = build_target_frame(raw, feature_result.features, all_cols, horizon)
+        windows = build_walk_forward_windows(target_frame, horizon, window_type, config, quick=False)
+        dates = pd.DatetimeIndex([w.test_date for w in windows])
+        sample = target_frame.loc[target_frame.index.intersection(dates)]
+        target = sample["target_log_return"] if "target_log_return" in sample else pd.Series(dtype=float)
+        for feature in poly_cols:
+            series = sample[feature] if feature in sample else pd.Series(index=sample.index, dtype=float)
+            valid = pd.concat([series, target], axis=1).dropna()
+            pearson, spearman, t_stat, p_value = _corr_stats(series, target)
+            valid_feature = feature_result.features[feature].dropna()
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "feature_name": feature,
+                    "horizon": horizon,
+                    "window_type": window_type,
+                    "n_samples": int(len(valid)),
+                    "coverage_pct": float(series.notna().mean()) if len(series) else 0.0,
+                    "pearson_corr": pearson,
+                    "spearman_corr": spearman,
+                    "information_coefficient": spearman,
+                    "ic_t_stat": t_stat,
+                    "ic_p_value": p_value,
+                    "first_date": valid_feature.index.min().date().isoformat() if len(valid_feature) else "",
+                    "last_date": valid_feature.index.max().date().isoformat() if len(valid_feature) else "",
+                    "used_in_official_model": feature in set(feature_result.feature_cols),
+                    "notes": "diagnostic_only_prediction_market_factor",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def polymarket_impact(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> pd.DataFrame:
+    from research_pipeline import build_target_frame, build_walk_forward_windows
+
+    poly_cols = polymarket_feature_columns(feature_result)
+    if not poly_cols:
+        return empty_diagnostic_frame("polymarket_impact.csv")
+    asset_id = run_id.split("_research", 1)[0] if "_research" in run_id else ""
+    valid_poly_dates = feature_result.features[poly_cols].dropna(how="all").index
+    if len(valid_poly_dates) == 0:
+        return empty_diagnostic_frame("polymarket_impact.csv")
+    official_cols = list(feature_result.feature_cols)
+    with_polymarket = list(dict.fromkeys(official_cols + poly_cols))
+    rows = []
+    for horizon, window_type in [(30, "official_monthly"), (90, "official_quarterly")]:
+        target_frame = build_target_frame(raw, feature_result.features, with_polymarket, horizon)
+        all_windows = build_walk_forward_windows(target_frame, horizon, window_type, config, quick=quick)
+        covered_window_dates = pd.DatetimeIndex([window.test_date for window in all_windows if window.test_date in set(pd.DatetimeIndex(valid_poly_dates))])
+        coverage_ratio = (len(covered_window_dates) / len(all_windows)) if all_windows else 0.0
+        coverage_ok = bool(len(covered_window_dates) >= 24 and coverage_ratio >= config.min_feature_valid_ratio)
+        summaries_by_included = {}
+        for included, cols in [(False, official_cols), (True, with_polymarket)]:
+            summaries_by_included[included] = _score_feature_set(
+                raw,
+                feature_result,
+                cols,
+                horizon,
+                window_type,
+                config,
+                quick=quick,
+                candidate_dates=pd.DatetimeIndex(valid_poly_dates),
+            )
+        for included, cols in [(False, official_cols), (True, with_polymarket)]:
+            summaries = summaries_by_included[included]
+            for model_name in config.first_model_set:
+                summary = summaries.get(model_name)
+                if summary is None:
+                    rows.append(
+                        {
+                            "run_id": run_id,
+                            "asset_id": asset_id,
+                            "horizon": horizon,
+                            "window_type": window_type,
+                            "model_name": model_name,
+                            "polymarket_included": included,
+                            "n_features": len(cols),
+                            "n_polymarket_features": len(poly_cols) if included else 0,
+                            "n_samples": 0,
+                            "directional_accuracy": np.nan,
+                            "balanced_accuracy": np.nan,
+                            "brier_score": np.nan,
+                            "calibration_error": np.nan,
+                            "sharpe": np.nan,
+                            "max_drawdown": np.nan,
+                            "net_return": np.nan,
+                            "beats_buy_hold": False,
+                            "beats_momentum_30d": False,
+                            "beats_momentum_90d": False,
+                            "beats_random_baseline": False,
+                            "reliability_label": "Low confidence",
+                            "passes_official_gates": False,
+                        }
+                    )
+                    continue
+                baseline_summary = summaries_by_included.get(False, {}).get(model_name, {})
+                improves_without_polymarket = bool(
+                    included
+                    and summary.get("directional_accuracy", -np.inf) > baseline_summary.get("directional_accuracy", np.inf)
+                    and summary.get("tc_adjusted_return", -np.inf) >= baseline_summary.get("tc_adjusted_return", np.inf)
+                )
+                passes = bool(
+                    included
+                    and horizon == 30
+                    and window_type == "official_monthly"
+                    and coverage_ok
+                    and improves_without_polymarket
+                    and summary.get("selection_eligible", False)
+                    and summary.get("sample_count", 0) >= 24
+                )
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "asset_id": asset_id,
+                        "horizon": horizon,
+                        "window_type": window_type,
+                        "model_name": model_name,
+                        "polymarket_included": included,
+                        "n_features": len(cols),
+                        "n_polymarket_features": len(poly_cols) if included else 0,
+                        "n_samples": int(summary.get("sample_count", 0)),
+                        "directional_accuracy": summary.get("directional_accuracy", np.nan),
+                        "balanced_accuracy": summary.get("balanced_accuracy", np.nan),
+                        "brier_score": summary.get("brier_score", np.nan),
+                        "calibration_error": summary.get("calibration_error", np.nan),
+                        "sharpe": summary.get("sharpe", np.nan),
+                        "max_drawdown": summary.get("max_drawdown", np.nan),
+                        "net_return": summary.get("tc_adjusted_return", np.nan),
+                        "beats_buy_hold": bool(summary.get("beats_buy_hold_direction", False)),
+                        "beats_momentum_30d": bool(summary.get("beats_momentum_30d", False)),
+                        "beats_momentum_90d": bool(summary.get("beats_momentum_90d", False)),
+                        "beats_random_baseline": bool(summary.get("beats_random_baseline", False)),
+                        "reliability_label": summary.get("reliability_label", "Low confidence"),
+                        "passes_official_gates": passes,
                     }
                 )
     return pd.DataFrame(rows)
@@ -979,6 +1190,9 @@ def write_diagnostics(
         "derivatives_coverage.csv": derivatives_coverage(run_id, raw, feature_result, base_outputs["data_availability.csv"]),
         "derivatives_impact.csv": derivatives_impact(run_id, raw, feature_result, config, quick=quick),
         "feature_group_stability.csv": feature_group_stability(run_id, raw, feature_result, config, quick=quick),
+        "polymarket_coverage.csv": polymarket_coverage(run_id, raw, feature_result, base_outputs["data_availability.csv"]),
+        "polymarket_feature_diagnostics.csv": polymarket_feature_diagnostics(run_id, raw, feature_result, config),
+        "polymarket_impact.csv": polymarket_impact(run_id, raw, feature_result, config, quick=quick),
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)

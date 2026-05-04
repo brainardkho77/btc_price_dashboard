@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `sol_research_20260427T221648Z`
+- Run ID: `sol_research_20260504T045552Z`
 - Selected model: `random_forest`
 - Signal: `neutral`
 - Reliability: `Medium confidence`
@@ -20,7 +20,7 @@
 - No derivatives impact comparison ran because no valid derivative feature entered the model feature set.
 
 ## Feature Group Watchlist
-- `dollar_rates_only` / `logistic_linear`: samples `35`, accuracy `57.1%`, Sharpe `1.21`, drawdown `-37.4%`, Brier `0.255`, calibration error `0.104`, reliability `Low confidence`.
+- `dollar_rates_only` / `logistic_linear`: samples `36`, accuracy `55.6%`, Sharpe `1.19`, drawdown `-37.4%`, Brier `0.270`, calibration error `0.108`, reliability `Low confidence`.
 - Remains strongest diagnostic group: `False`
 - It is not selected unless it passes the official 30d selection rules in the main leaderboard.
 
@@ -28,8 +28,8 @@
 - `all_features` / `logistic_linear`: `6` stable slices
 - `all_features` / `random_forest`: `6` stable slices
 - `dollar_rates_only` / `logistic_linear`: `6` stable slices
+- `price_momentum_only` / `momentum_90d`: `6` stable slices
 - `price_momentum_only` / `random_forest`: `6` stable slices
-- `price_momentum_only` / `momentum_90d`: `3` stable slices
 
 ## Conclusion
 - Derivatives improved 30d official diagnostics: `False`

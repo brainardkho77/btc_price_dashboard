@@ -79,6 +79,9 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "polymarket_coverage": read_diagnostic("polymarket_coverage.csv"),
         "polymarket_feature_diagnostics": read_diagnostic("polymarket_feature_diagnostics.csv"),
         "polymarket_impact": read_diagnostic("polymarket_impact.csv"),
+        "factor_quality": read_diagnostic("factor_quality_scorecard.csv"),
+        "signal_quality": read_diagnostic("signal_quality_report.csv"),
+        "pruned_leaderboard": read_diagnostic("pruned_feature_leaderboard.csv"),
     }
     data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     data["diagnostic_warnings"] = diagnostic_warnings
@@ -190,6 +193,9 @@ feature_group_stability = outputs["feature_group_stability"]
 polymarket_coverage = outputs["polymarket_coverage"]
 polymarket_feature_diagnostics = outputs["polymarket_feature_diagnostics"]
 polymarket_impact = outputs["polymarket_impact"]
+factor_quality = outputs["factor_quality"]
+signal_quality = outputs["signal_quality"]
+pruned_leaderboard = outputs["pruned_leaderboard"]
 manifest = outputs["manifest"]
 asset_name = str(manifest.get("asset_name") or asset_config.display_name)
 
@@ -231,8 +237,8 @@ if str(primary_row["selected_model"]) == "no_valid_edge":
         "The dashboard is therefore showing a neutral signal instead of forcing a forecast."
     )
 
-quality_tab, no_edge_tab, forecast_tab, calibration_tab, regimes_tab, data_tab, feature_tab = st.tabs(
-    ["Model Quality", "No Edge", "Latest Forecast", "Calibration", "Regimes", "Data", "Features"]
+quality_tab, signal_tab, no_edge_tab, forecast_tab, calibration_tab, regimes_tab, data_tab, feature_tab = st.tabs(
+    ["Model Quality", "Signal Strength", "No Edge", "Latest Forecast", "Calibration", "Regimes", "Data", "Features"]
 )
 
 with quality_tab:
@@ -290,6 +296,105 @@ with quality_tab:
         chart_model = str(table.iloc[0]["model"]) if not table.empty else ""
     if chart_model:
         st.plotly_chart(equity_chart(equity, selected_horizon, selected_window, chart_model, asset_name), use_container_width=True)
+
+with signal_tab:
+    st.subheader("Signal Strength")
+    st.caption("Precomputed pruning and signal-quality diagnostics. These do not train, tune, fetch data, or backtest inside Streamlit.")
+    pruned_30 = pruned_leaderboard[
+        (pruned_leaderboard["horizon"] == 30)
+        & (pruned_leaderboard["window_type"] == "official_monthly")
+    ].copy()
+    signal_30 = signal_quality[
+        (signal_quality["horizon"] == 30)
+        & (signal_quality["window_type"] == "official_monthly")
+    ].copy()
+    promoted = pruned_30[pruned_30["promotion_eligible"] == True] if not pruned_30.empty else pd.DataFrame()
+    best_pruned = pruned_30[
+        ~pruned_30["model_name"].isin(["buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"])
+    ].sort_values(
+        ["promotion_eligible", "directional_accuracy", "brier_score", "sharpe", "max_drawdown", "calibration_error"],
+        ascending=[False, False, True, False, False, True],
+        na_position="last",
+    ).head(1) if not pruned_30.empty else pd.DataFrame()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Official signal", str(primary_row["signal"]))
+    c2.metric("Current model", str(primary_row["selected_model"]))
+    c3.metric("Promoted pruned sets", str(len(promoted)))
+    if not best_pruned.empty:
+        c4.metric("Best pruned accuracy", fmt_pct(best_pruned.iloc[0]["directional_accuracy"]), str(best_pruned.iloc[0]["candidate_feature_set"]))
+    else:
+        c4.metric("Best pruned accuracy", "n/a")
+
+    if pruned_30.empty:
+        st.warning("No precomputed pruned feature leaderboard is available.")
+    else:
+        st.dataframe(
+            pruned_30.sort_values(
+                ["promotion_eligible", "directional_accuracy", "brier_score"],
+                ascending=[False, False, True],
+                na_position="last",
+            ).head(40).style.format(
+                {
+                    "directional_accuracy": "{:.1%}",
+                    "balanced_accuracy": "{:.1%}",
+                    "brier_score": "{:.3f}",
+                    "calibration_error": "{:.3f}",
+                    "sharpe": "{:.2f}",
+                    "max_drawdown": "{:.1%}",
+                    "net_return": "{:.1%}",
+                    "median_selected_features": "{:.0f}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.subheader("Tradability Checks")
+    if signal_30.empty:
+        st.warning("No precomputed signal-quality report is available.")
+    else:
+        st.dataframe(
+            signal_30.sort_values(["long_hit_rate", "net_return"], ascending=[False, False], na_position="last").head(40).style.format(
+                {
+                    "abstention_rate": "{:.1%}",
+                    "long_hit_rate": "{:.1%}",
+                    "long_avg_return": "{:.1%}",
+                    "false_positive_rate": "{:.1%}",
+                    "avg_probability_when_long": "{:.1%}",
+                    "realized_return_when_long": "{:.1%}",
+                    "brier_score": "{:.3f}",
+                    "calibration_error": "{:.3f}",
+                    "net_return": "{:.1%}",
+                    "bootstrap_ci_low": "{:.1%}",
+                    "bootstrap_ci_high": "{:.1%}",
+                    "permutation_p_value": "{:.3f}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.subheader("Factor Quality Scorecard")
+    factor_30 = factor_quality[
+        (factor_quality["horizon"] == 30)
+        & (factor_quality["window_type"] == "official_monthly")
+    ].copy()
+    if factor_30.empty:
+        st.warning("No precomputed factor quality scorecard is available.")
+    else:
+        st.dataframe(
+            factor_30.sort_values("information_coefficient", key=lambda s: s.abs(), ascending=False, na_position="last").head(60).style.format(
+                {
+                    "coverage_pct": "{:.1%}",
+                    "information_coefficient": "{:.3f}",
+                    "ic_p_value": "{:.3f}",
+                    "ic_stability_score": "{:.2f}",
+                    "missing_pct": "{:.1%}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
 
 with no_edge_tab:
     st.subheader("No Valid Edge Diagnostics")

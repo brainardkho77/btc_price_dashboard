@@ -36,7 +36,7 @@ def mirror_btc_outputs(base_output_dir: Path, btc_output_dir: Path) -> None:
         if dst_csv.exists():
             shutil.rmtree(dst_csv)
         shutil.copytree(src_csv, dst_csv)
-    for filename in ["full_refresh_report.md", "full_refresh_diagnostics.md", "derivatives_recovery_report.md"]:
+    for filename in ["full_refresh_report.md", "full_refresh_diagnostics.md", "derivatives_recovery_report.md", "feature_pruning_summary.md"]:
         src = btc_output_dir / filename
         if src.exists():
             shutil.copy2(src, base_output_dir / filename)

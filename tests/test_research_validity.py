@@ -25,7 +25,12 @@ from research_pipeline import (
     validate_manual_derivative_csv,
     window_fingerprint,
 )
-from diagnostic_outputs import derivatives_coverage, feature_group_for_feature
+from diagnostic_outputs import (
+    candidate_feature_sets,
+    derivatives_coverage,
+    feature_group_for_feature,
+    select_nested_pruned_features,
+)
 from schemas import DIAGNOSTIC_OUTPUT_SCHEMAS
 
 
@@ -227,12 +232,18 @@ def test_diagnostic_schemas_include_required_outputs():
         "polymarket_coverage.csv",
         "polymarket_feature_diagnostics.csv",
         "polymarket_impact.csv",
+        "factor_quality_scorecard.csv",
+        "signal_quality_report.csv",
+        "pruned_feature_leaderboard.csv",
     ]:
         assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
     assert "balanced_accuracy" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
     assert "calibration_error" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
     assert "beats_momentum_90d" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
     assert "passes_official_gates" in DIAGNOSTIC_OUTPUT_SCHEMAS["polymarket_impact.csv"]
+    assert "promotion_eligible" in DIAGNOSTIC_OUTPUT_SCHEMAS["pruned_feature_leaderboard.csv"]
+    assert "long_hit_rate" in DIAGNOSTIC_OUTPUT_SCHEMAS["signal_quality_report.csv"]
+    assert "correlation_cluster" in DIAGNOSTIC_OUTPUT_SCHEMAS["factor_quality_scorecard.csv"]
 
 
 def test_feature_group_mapping_is_stable():
@@ -285,6 +296,49 @@ def test_polymarket_features_are_quarantined_from_official_feature_cols():
     audit = feature_result.feature_audit[feature_result.feature_audit["feature_name"].str.startswith("polymarket_")]
     assert not audit.empty
     assert audit["used_in_model"].eq(False).all()
+
+
+def test_candidate_feature_sets_keep_polymarket_diagnostic_only():
+    cols = [
+        "momentum_ret_30d",
+        "macro_us_10y_yield",
+        "cross_asset_spx_ret_30d",
+        "stablecoins_supply_chg_30d",
+        "derivatives_funding_rate",
+        "polymarket_ladder_skew",
+    ]
+    sets = candidate_feature_sets(cols, "btc")
+    assert "polymarket_ladder_skew" not in sets["no_polymarket"]
+    assert "polymarket_ladder_skew" not in sets["all_features"]
+
+
+def test_nested_feature_pruning_uses_train_columns_only_and_drops_correlated_features():
+    config = ResearchConfig(min_feature_valid_ratio=0.40)
+    rng = np.random.default_rng(123)
+    dates = pd.date_range("2020-01-01", periods=260, freq="D")
+    target = rng.normal(size=len(dates))
+    frame = pd.DataFrame(
+        {
+            "target_log_return": target,
+            "target_up": (target > 0).astype(int),
+            "asset_close": 100 + np.arange(len(dates)),
+            "signal_a": target + rng.normal(scale=0.01, size=len(dates)),
+            "signal_b": target + rng.normal(scale=0.01, size=len(dates)),
+            "test_only_signal": np.nan,
+        },
+        index=dates,
+    )
+    frame.loc[dates[-20:], "test_only_signal"] = target[-20:]
+    train = frame.iloc[:-20]
+    selected = select_nested_pruned_features(
+        train,
+        ["signal_a", "signal_b", "test_only_signal"],
+        config,
+        max_features=3,
+        corr_threshold=0.85,
+    )
+    assert "test_only_signal" not in selected
+    assert len({"signal_a", "signal_b"} & set(selected)) == 1
 
 
 def test_manual_derivative_csv_validation_statuses(tmp_path):

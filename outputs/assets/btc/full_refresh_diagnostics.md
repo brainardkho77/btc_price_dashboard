@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `btc_research_20260504T051147Z`
+- Full refresh run ID: `btc_research_20260504T121835Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -37,10 +37,10 @@ Validation gates failed by ML model:
 - It remains diagnostic only because feature-group results are not official model-selection inputs and must prove stability across regimes first.
 
 ## Regime Findings
-- `logistic_linear` in `post_halving`: samples `24`, accuracy `70.8%`, net return `592.0%`, reliability `Low confidence`
+- `logistic_linear` in `post_halving`: samples `24`, accuracy `66.7%`, net return `504.7%`, reliability `Low confidence`
 - `momentum_90d` in `low_volatility`: samples `66`, accuracy `65.2%`, net return `2371.9%`, reliability `Low confidence`
 - `random_forest` in `post_etf`: samples `27`, accuracy `63.0%`, net return `143.6%`, reliability `Low confidence`
-- `logistic_linear` in `post_etf`: samples `27`, accuracy `63.0%`, net return `130.3%`, reliability `Low confidence`
+- `logistic_linear` in `post_etf`: samples `27`, accuracy `63.0%`, net return `122.3%`, reliability `Low confidence`
 - `buy_hold_direction` in `post_halving`: samples `24`, accuracy `62.5%`, net return `662.4%`, reliability `Low confidence`
 - `momentum_90d` in `high_rate`: samples `66`, accuracy `62.1%`, net return `267.2%`, reliability `Low confidence`
 - `random_forest` in `bear_market`: samples `45`, accuracy `60.0%`, net return `174.6%`, reliability `Low confidence`

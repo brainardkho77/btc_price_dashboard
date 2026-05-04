@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `sol_research_20260504T045552Z`
+- Full refresh run ID: `sol_research_20260504T130959Z`
 - Selected model: `random_forest`
 - Signal: `neutral`
 - Reliability: `Medium confidence`

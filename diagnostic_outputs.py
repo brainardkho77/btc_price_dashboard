@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from research_config import ResearchConfig
+from research_config import MIN_SAMPLE_THRESHOLDS, ResearchConfig
 from schemas import empty_diagnostic_frame, write_diagnostic_csv
 
 
@@ -163,9 +163,12 @@ def _corr_stats(x: pd.Series, y: pd.Series) -> Tuple[float, float, float, float]
     pair = pd.concat([x, y], axis=1).dropna()
     if len(pair) < 4:
         return np.nan, np.nan, np.nan, np.nan
-    pearson = float(pair.iloc[:, 0].corr(pair.iloc[:, 1]))
-    ranked = pair.rank(method="average")
-    spearman = float(ranked.iloc[:, 0].corr(ranked.iloc[:, 1]))
+    if pair.iloc[:, 0].nunique(dropna=True) < 2 or pair.iloc[:, 1].nunique(dropna=True) < 2:
+        return np.nan, np.nan, np.nan, np.nan
+    with np.errstate(invalid="ignore", divide="ignore"):
+        pearson = float(pair.iloc[:, 0].corr(pair.iloc[:, 1]))
+        ranked = pair.rank(method="average")
+        spearman = float(ranked.iloc[:, 0].corr(ranked.iloc[:, 1]))
     r = max(min(spearman, 0.999999), -0.999999) if not pd.isna(spearman) else np.nan
     if pd.isna(r):
         return pearson, spearman, np.nan, np.nan
@@ -692,6 +695,562 @@ def polymarket_impact(
     return pd.DataFrame(rows)
 
 
+def _asset_id_from_run(run_id: str) -> str:
+    return run_id.split("_research", 1)[0] if "_research" in run_id else ""
+
+
+def _sample_fingerprint(dates: Sequence[pd.Timestamp]) -> str:
+    import hashlib
+
+    payload = "|".join(pd.Timestamp(date).date().isoformat() for date in pd.DatetimeIndex(dates))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def candidate_feature_sets(feature_cols: Sequence[str], asset_id: str) -> Dict[str, List[str]]:
+    cols = [col for col in dict.fromkeys(feature_cols) if not col.startswith("polymarket_")]
+    groups = feature_group_columns(cols)
+
+    def only(*group_names: str) -> List[str]:
+        selected: List[str] = []
+        for group_name in group_names:
+            selected.extend(groups.get(group_name, []))
+        return list(dict.fromkeys(selected))
+
+    def without(*group_names: str) -> List[str]:
+        excluded = set(only(*group_names))
+        return [col for col in cols if col not in excluded]
+
+    sets = {
+        "all_features": cols,
+        "price_momentum_only": groups.get("price_momentum_only", []),
+        "price_plus_macro": only("price_momentum_only", "macro_liquidity_only", "dollar_rates_only"),
+        "price_plus_risk_assets": only("price_momentum_only", "risk_assets_only"),
+        "price_plus_dollar_rates": only("price_momentum_only", "dollar_rates_only"),
+        "price_plus_stablecoins": only("price_momentum_only", "stablecoins_only"),
+        "core_price_macro_risk": only("price_momentum_only", "macro_liquidity_only", "dollar_rates_only", "risk_assets_only"),
+        "no_onchain": without("onchain_only"),
+        "no_derivatives": without("derivatives_only"),
+        "no_polymarket": [col for col in cols if not col.startswith("polymarket_")],
+    }
+    cycle_cols = [col for col in cols if "cycle_" in col]
+    if asset_id == "btc":
+        sets.update(
+            {
+                "btc_dollar_rates_cycle": list(dict.fromkeys(only("dollar_rates_only") + cycle_cols)),
+                "btc_core_dollar_derivatives_cycle": list(
+                    dict.fromkeys(only("price_momentum_only", "dollar_rates_only", "derivatives_only") + cycle_cols)
+                ),
+                "btc_no_sparse_derivatives": without("derivatives_only") if len(groups.get("derivatives_only", [])) < 6 else cols,
+            }
+        )
+    if asset_id == "sol":
+        sets.update(
+            {
+                "sol_rates_risk_price": only("price_momentum_only", "dollar_rates_only", "risk_assets_only"),
+                "sol_dollar_rates_only": groups.get("dollar_rates_only", []),
+                "sol_macro_liquidity_price": only("price_momentum_only", "macro_liquidity_only"),
+                "sol_risk_assets_only": groups.get("risk_assets_only", []),
+            }
+        )
+    return {name: list(dict.fromkeys(values)) for name, values in sets.items() if values}
+
+
+def _feature_valid_threshold(feature: str, config: ResearchConfig) -> float:
+    if feature_group_for_feature(feature) == "derivatives_only":
+        return float(config.min_derivative_feature_valid_ratio)
+    return float(config.min_feature_valid_ratio)
+
+
+def _training_feature_stats(train: pd.DataFrame, feature: str, target_col: str = "target_log_return") -> dict:
+    series = train[feature] if feature in train else pd.Series(index=train.index, dtype=float)
+    target = train[target_col] if target_col in train else pd.Series(index=train.index, dtype=float)
+    valid = pd.concat([series, target], axis=1).dropna()
+    pearson, spearman, t_stat, p_value = _corr_stats(series, target)
+    return {
+        "feature": feature,
+        "n_samples": int(len(valid)),
+        "coverage_pct": float(series.notna().mean()) if len(series) else 0.0,
+        "ic": spearman,
+        "abs_ic": abs(float(spearman)) if pd.notna(spearman) else -np.inf,
+        "p_value": p_value,
+        "t_stat": t_stat,
+    }
+
+
+def select_nested_pruned_features(
+    train: pd.DataFrame,
+    candidate_cols: Sequence[str],
+    config: ResearchConfig,
+    *,
+    max_features: int = 30,
+    corr_threshold: float = 0.85,
+) -> List[str]:
+    from research_pipeline import is_leaky_feature_name
+
+    stats = []
+    for feature in candidate_cols:
+        if feature not in train or is_leaky_feature_name(feature) or feature.startswith("polymarket_"):
+            continue
+        if not pd.api.types.is_numeric_dtype(train[feature]):
+            continue
+        row = _training_feature_stats(train, feature)
+        min_coverage = _feature_valid_threshold(feature, config)
+        if row["coverage_pct"] < min_coverage or row["n_samples"] < 120 or not np.isfinite(row["abs_ic"]):
+            continue
+        row["group"] = feature_group_for_feature(feature)
+        stats.append(row)
+    if not stats:
+        return []
+
+    stats_frame = pd.DataFrame(stats)
+    stats_frame["group_rank"] = stats_frame.groupby("group")["abs_ic"].rank(method="first", ascending=False)
+    stats_frame = stats_frame[stats_frame["group_rank"] <= 10].copy()
+    stats_frame = stats_frame.sort_values(["abs_ic", "coverage_pct"], ascending=[False, False])
+
+    kept: List[str] = []
+    numeric_train = train[[col for col in stats_frame["feature"] if col in train]].copy()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        corr = numeric_train.corr(method="spearman").abs() if not numeric_train.empty else pd.DataFrame()
+    for feature in stats_frame["feature"]:
+        if len(kept) >= max_features:
+            break
+        if corr.empty:
+            kept.append(feature)
+            continue
+        too_close = any(
+            feature in corr.index
+            and other in corr.columns
+            and pd.notna(corr.at[feature, other])
+            and corr.at[feature, other] >= corr_threshold
+            for other in kept
+        )
+        if not too_close:
+            kept.append(feature)
+    return kept
+
+
+def _predict_model_windows_nested_pruned(
+    model_name: str,
+    frame: pd.DataFrame,
+    candidate_cols: Sequence[str],
+    windows: Sequence[object],
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> Tuple[pd.DataFrame, List[int]]:
+    from research_pipeline import _calibrate_probabilities, _model_pipeline, _split_fit_calibration, tune_threshold_nested
+
+    rows = []
+    selected_counts: List[int] = []
+    valid = frame.dropna(subset=["target_log_return", "target_up", "asset_close"]).copy()
+    for idx, window in enumerate(windows):
+        train = valid.loc[valid.index < window.test_date].copy()
+        test = valid.loc[[window.test_date]].copy()
+        if train.empty or test.empty:
+            continue
+        fit_train, cal = _split_fit_calibration(train, config)
+        selected_cols = select_nested_pruned_features(fit_train, candidate_cols, config)
+        selected_cols = [col for col in selected_cols if fit_train[col].notna().any()]
+        if len(selected_cols) < 5 or fit_train["target_up"].nunique() < 2 or cal["target_up"].nunique() < 2:
+            continue
+
+        model = _model_pipeline(model_name, config.random_seed + idx, quick)
+        model.fit(fit_train[selected_cols], fit_train["target_up"].astype(int))
+        raw_cal_prob = model.predict_proba(cal[selected_cols])[:, 1]
+        calibrated_cal_prob, _ = _calibrate_probabilities(raw_cal_prob, raw_cal_prob, cal["target_up"].astype(int).to_numpy())
+        cal_eval = pd.DataFrame(
+            {
+                "probability_up": calibrated_cal_prob,
+                "actual_return": np.exp(cal["target_log_return"].astype(float)) - 1,
+            },
+            index=cal.index,
+        )
+        threshold = tune_threshold_nested(cal_eval, config.transaction_cost_bps)
+
+        raw_test_prob = model.predict_proba(test[selected_cols])[:, 1]
+        prob, prob_conf = _calibrate_probabilities(raw_test_prob, raw_cal_prob, cal["target_up"].astype(int).to_numpy())
+        prob_up = float(prob[0])
+        cal_up = cal.loc[cal["target_up"] == 1, "target_log_return"]
+        cal_down = cal.loc[cal["target_up"] == 0, "target_log_return"]
+        mean_up = float(cal_up.mean()) if len(cal_up) else float(cal["target_log_return"].mean())
+        mean_down = float(cal_down.mean()) if len(cal_down) else float(cal["target_log_return"].mean())
+        expected_log = prob_up * mean_up + (1 - prob_up) * mean_down
+        actual_log = float(test["target_log_return"].iloc[0])
+        selected_counts.append(len(selected_cols))
+        rows.append(
+            {
+                "date": window.test_date,
+                "model": model_name,
+                "horizon": window.horizon,
+                "window_type": window.window_type,
+                "is_official": window.is_official,
+                "probability_up": prob_up,
+                "probability_confidence": prob_conf,
+                "expected_log_return": expected_log,
+                "actual_log_return": actual_log,
+                "actual_return": math.exp(actual_log) - 1,
+                "actual_up": int(actual_log > 0),
+                "threshold": threshold,
+                "threshold_source": "nested_feature_selection_and_calibration",
+                "predicted_up": int(prob_up >= threshold),
+                "position": float(prob_up >= threshold),
+                "train_rows": int(len(fit_train)),
+                "calibration_rows": int(len(cal)),
+                "feature_count": int(len(selected_cols)),
+            }
+        )
+    if not rows:
+        return pd.DataFrame(), selected_counts
+    return pd.DataFrame(rows).set_index("date").sort_index(), selected_counts
+
+
+def _bootstrap_signal_quality(preds: pd.DataFrame, config: ResearchConfig, *, quick: bool) -> Tuple[float, float, float]:
+    if preds.empty:
+        return np.nan, np.nan, np.nan
+    iterations = config.quick_bootstrap_iterations if quick else min(config.bootstrap_iterations, 250)
+    perm_iterations = config.quick_permutation_iterations if quick else min(config.permutation_iterations, 250)
+    rng = np.random.default_rng(config.random_seed + len(preds))
+    actual = preds["actual_up"].astype(int).to_numpy()
+    pred = preds["predicted_up"].astype(int).to_numpy()
+    observed = float(np.mean(actual == pred))
+    boot = []
+    n = len(preds)
+    for _ in range(iterations):
+        idx = rng.integers(0, n, n)
+        boot.append(float(np.mean(actual[idx] == pred[idx])))
+    perm_hits = 0
+    for _ in range(perm_iterations):
+        if float(np.mean(rng.permutation(actual) == pred)) >= observed:
+            perm_hits += 1
+    return float(np.percentile(boot, 2.5)), float(np.percentile(boot, 97.5)), float((perm_hits + 1) / (perm_iterations + 1))
+
+
+def signal_quality_row(
+    run_id: str,
+    asset_id: str,
+    horizon: int,
+    window_type: str,
+    candidate_name: str,
+    model_name: str,
+    preds: pd.DataFrame,
+    summary: dict,
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> dict:
+    if preds.empty:
+        ci_low, ci_high, p_value = np.nan, np.nan, np.nan
+        long = pd.DataFrame()
+    else:
+        ci_low, ci_high, p_value = _bootstrap_signal_quality(preds, config, quick=quick)
+        long = preds[preds["position"].astype(float) > 0]
+    long_actual_down = int((long["actual_up"].astype(int) == 0).sum()) if not long.empty else 0
+    return {
+        "run_id": run_id,
+        "asset_id": asset_id,
+        "horizon": horizon,
+        "window_type": window_type,
+        "candidate_feature_set": candidate_name,
+        "model_name": model_name,
+        "n_samples": int(len(preds)),
+        "n_long_signals": int(len(long)),
+        "n_neutral_signals": int(len(preds) - len(long)),
+        "abstention_rate": float(1 - len(long) / len(preds)) if len(preds) else np.nan,
+        "long_hit_rate": float(long["actual_up"].mean()) if not long.empty else np.nan,
+        "long_avg_return": float(long["actual_return"].mean()) if not long.empty else np.nan,
+        "false_positive_rate": float(long_actual_down / len(long)) if not long.empty else np.nan,
+        "avg_probability_when_long": float(long["probability_up"].mean()) if not long.empty else np.nan,
+        "realized_return_when_long": float((1 + long["actual_return"]).prod() - 1) if not long.empty else np.nan,
+        "brier_score": summary.get("brier_score", np.nan),
+        "calibration_error": summary.get("calibration_error", np.nan),
+        "net_return": summary.get("tc_adjusted_return", np.nan),
+        "bootstrap_ci_low": ci_low,
+        "bootstrap_ci_high": ci_high,
+        "permutation_p_value": p_value,
+        "reliability_label": summary.get("reliability_label", "Low confidence"),
+    }
+
+
+def factor_quality_scorecard(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+) -> pd.DataFrame:
+    from research_pipeline import build_target_frame, build_walk_forward_windows
+
+    asset_id = _asset_id_from_run(run_id)
+    audit = feature_result.feature_audit.set_index("feature_name") if not feature_result.feature_audit.empty else pd.DataFrame()
+    rows = []
+    for horizon, window_type in [(30, "official_monthly"), (90, "official_quarterly")]:
+        target_frame = build_target_frame(raw, feature_result.features, feature_result.feature_cols, horizon)
+        windows = build_walk_forward_windows(target_frame, horizon, window_type, config, quick=False)
+        dates = pd.DatetimeIndex([window.test_date for window in windows])
+        sample = target_frame.loc[target_frame.index.intersection(dates)]
+        if sample.empty:
+            continue
+        with np.errstate(invalid="ignore", divide="ignore"):
+            corr_frame = sample[list(feature_result.feature_cols)].corr(method="spearman").abs()
+        cluster_ids: Dict[str, str] = {}
+        cluster_count = 0
+        for feature in feature_result.feature_cols:
+            if feature in cluster_ids:
+                continue
+            cluster_count += 1
+            cluster_name = f"cluster_{cluster_count:03d}"
+            cluster_ids[feature] = cluster_name
+            if feature in corr_frame.index:
+                neighbors = corr_frame.columns[(corr_frame.loc[feature] >= 0.85).fillna(False)].tolist()
+                for neighbor in neighbors:
+                    cluster_ids.setdefault(neighbor, cluster_name)
+        for feature in feature_result.feature_cols:
+            stats = _training_feature_stats(sample, feature)
+            period_scores = []
+            for mask in _period_slice_masks(raw, sample.index).values():
+                part = sample.loc[mask.to_numpy()]
+                if len(part) < 8:
+                    continue
+                _, spearman, _, _ = _corr_stats(part[feature], part["target_log_return"])
+                if pd.notna(spearman):
+                    period_scores.append(np.sign(spearman))
+            stability = float(abs(np.nanmean(period_scores))) if period_scores else np.nan
+            min_coverage = _feature_valid_threshold(feature, config)
+            keep = bool(
+                stats["coverage_pct"] >= min_coverage
+                and stats["n_samples"] >= min_samples_for(horizon, window_type)
+                and pd.notna(stats["ic"])
+                and abs(float(stats["ic"])) >= 0.05
+            )
+            reasons = []
+            if stats["coverage_pct"] < min_coverage:
+                reasons.append("below_coverage_threshold")
+            if stats["n_samples"] < min_samples_for(horizon, window_type):
+                reasons.append("below_sample_threshold")
+            if pd.isna(stats["ic"]) or abs(float(stats["ic"])) < 0.05:
+                reasons.append("weak_ic")
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "feature_name": feature,
+                    "feature_group": feature_group_for_feature(feature),
+                    "source": audit.at[feature, "source"] if feature in audit.index else "",
+                    "horizon": horizon,
+                    "window_type": window_type,
+                    "n_samples": stats["n_samples"],
+                    "coverage_pct": stats["coverage_pct"],
+                    "information_coefficient": stats["ic"],
+                    "ic_p_value": stats["p_value"],
+                    "ic_sign": "positive" if pd.notna(stats["ic"]) and stats["ic"] > 0 else "negative" if pd.notna(stats["ic"]) and stats["ic"] < 0 else "flat",
+                    "ic_stability_score": stability,
+                    "missing_pct": 1 - stats["coverage_pct"],
+                    "correlation_cluster": cluster_ids.get(feature, ""),
+                    "keep_candidate": keep,
+                    "drop_reason": "; ".join(reasons),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _pruned_rejection_reason(summary: dict, promotion_eligible: bool, base_comparison_ok: bool, stability_ok: bool) -> str:
+    reasons = []
+    if promotion_eligible:
+        return "promotion_eligible"
+    if summary.get("model") in {"buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"}:
+        reasons.append("baseline_not_promotable")
+    if not summary.get("selection_eligible", False):
+        reasons.append("failed_official_selection_gates")
+    if not base_comparison_ok:
+        reasons.append("did_not_improve_current_all_features_without_material_metric_worsening")
+    if not stability_ok:
+        reasons.append("failed_bootstrap_or_permutation_stability_check")
+    if summary.get("reliability_label") == "Low confidence":
+        reasons.append("low_reliability")
+    return "; ".join(reasons) if reasons else "not_promoted"
+
+
+def pruned_feature_diagnostics(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+    base_leaderboard: pd.DataFrame,
+    *,
+    quick: bool,
+) -> Dict[str, pd.DataFrame]:
+    from research_pipeline import BASELINE_MODELS, build_target_frame, build_walk_forward_windows, compute_metrics, decorate_summary, predict_baseline_windows
+
+    asset_id = _asset_id_from_run(run_id)
+    candidate_sets = candidate_feature_sets(feature_result.feature_cols, asset_id)
+    if quick:
+        quick_names = {
+            "all_features",
+            "price_plus_macro",
+            "price_plus_dollar_rates",
+            "core_price_macro_risk",
+            "btc_dollar_rates_cycle",
+            "btc_core_dollar_derivatives_cycle",
+            "sol_rates_risk_price",
+            "sol_dollar_rates_only",
+        }
+        candidate_sets = {name: cols for name, cols in candidate_sets.items() if name in quick_names}
+    full_model_candidates = {
+        "core_price_macro_risk",
+        "price_plus_dollar_rates",
+        "btc_core_dollar_derivatives_cycle",
+        "btc_dollar_rates_cycle",
+        "sol_rates_risk_price",
+        "sol_dollar_rates_only",
+    }
+    leaderboard_rows = []
+    signal_rows = []
+    base_30 = base_leaderboard[(base_leaderboard["horizon"] == 30) & (base_leaderboard["window_type"] == "official_monthly")]
+    base_ml = base_30[~base_30["model"].isin(BASELINE_MODELS)].sort_values(
+        ["directional_accuracy", "brier_score", "sharpe", "max_drawdown", "calibration_error"],
+        ascending=[False, True, False, False, True],
+        na_position="last",
+    )
+    base_best = base_ml.iloc[0].to_dict() if not base_ml.empty else {}
+
+    for horizon, window_type in [(30, "official_monthly")]:
+        for candidate_name, candidate_cols in candidate_sets.items():
+            target_frame = build_target_frame(raw, feature_result.features, candidate_cols, horizon)
+            windows = build_walk_forward_windows(target_frame, horizon, window_type, config, quick=quick)
+            if quick and len(windows) > 12:
+                windows = windows[-12:]
+            if not windows:
+                continue
+            predictions_by_model: Dict[str, pd.DataFrame] = {}
+            selected_counts_by_model: Dict[str, List[int]] = {}
+            for baseline in config.baseline_models:
+                preds = predict_baseline_windows(baseline, target_frame, windows, config)
+                if not preds.empty:
+                    predictions_by_model[baseline] = preds
+                    selected_counts_by_model[baseline] = [0]
+            if len(candidate_cols) >= 5:
+                model_names = config.first_model_set if (not quick and candidate_name in full_model_candidates) else ["logistic_linear"]
+                for model_name in model_names:
+                    preds, selected_counts = _predict_model_windows_nested_pruned(
+                        model_name,
+                        target_frame,
+                        candidate_cols,
+                        windows,
+                        config,
+                        quick=quick,
+                    )
+                    if not preds.empty:
+                        predictions_by_model[model_name] = preds
+                        selected_counts_by_model[model_name] = selected_counts
+            if not predictions_by_model:
+                continue
+            common_dates = None
+            for preds in predictions_by_model.values():
+                common_dates = preds.index if common_dates is None else common_dates.intersection(preds.index)
+            if common_dates is None or len(common_dates) == 0:
+                continue
+            predictions_by_model = {model: preds.loc[common_dates].sort_index() for model, preds in predictions_by_model.items()}
+
+            summaries: Dict[str, dict] = {}
+            for model, preds in predictions_by_model.items():
+                metrics, _ = compute_metrics(preds, horizon, window_type, config.transaction_cost_bps)
+                metrics.update(
+                    {
+                        "run_id": run_id,
+                        "horizon": horizon,
+                        "window_type": window_type,
+                        "is_official": True,
+                        "model": model,
+                        "threshold": float(preds["threshold"].mean()),
+                        "threshold_source": "baseline_rule" if model in BASELINE_MODELS else "nested_feature_selection_and_calibration",
+                    }
+                )
+                summaries[model] = metrics
+            baseline_summaries = {name: summaries[name] for name in BASELINE_MODELS if name in summaries}
+            fingerprint = _sample_fingerprint(common_dates)
+            candidate_model_names = config.first_model_set if (not quick and candidate_name in full_model_candidates) else ["logistic_linear"]
+            for model_name in config.baseline_models + candidate_model_names:
+                summary = summaries.get(model_name)
+                if summary is None:
+                    continue
+                decorated = decorate_summary(summary, baseline_summaries, horizon, True, model_name)
+                base_ok = True
+                if model_name not in BASELINE_MODELS and horizon == 30 and base_best:
+                    base_ok = bool(
+                        decorated.get("directional_accuracy", -np.inf) > base_best.get("directional_accuracy", np.inf)
+                        and decorated.get("brier_score", np.inf) <= base_best.get("brier_score", np.inf) + 0.02
+                        and decorated.get("calibration_error", np.inf) <= base_best.get("calibration_error", np.inf) + 0.03
+                        and decorated.get("sharpe", -np.inf) >= base_best.get("sharpe", -np.inf) - 0.25
+                        and decorated.get("max_drawdown", -np.inf) >= base_best.get("max_drawdown", -np.inf) - 0.10
+                    )
+                ci_low, _, p_value = _bootstrap_signal_quality(predictions_by_model[model_name], config, quick=quick)
+                stability_ok = bool(
+                    model_name not in BASELINE_MODELS
+                    and pd.notna(ci_low)
+                    and ci_low > 0.50
+                    and pd.notna(p_value)
+                    and p_value <= 0.10
+                )
+                promotion_eligible = bool(
+                    horizon == 30
+                    and candidate_name != "all_features"
+                    and model_name not in BASELINE_MODELS
+                    and decorated.get("selection_eligible", False)
+                    and base_ok
+                    and stability_ok
+                    and decorated.get("sample_count", 0) >= MIN_SAMPLE_THRESHOLDS["30d_official"]
+                )
+                selected_counts = selected_counts_by_model.get(model_name, [0])
+                leaderboard_rows.append(
+                    {
+                        "run_id": run_id,
+                        "asset_id": asset_id,
+                        "horizon": horizon,
+                        "window_type": window_type,
+                        "candidate_feature_set": candidate_name,
+                        "model_name": model_name,
+                        "n_features": len(candidate_cols) if model_name not in BASELINE_MODELS else 0,
+                        "median_selected_features": float(np.nanmedian(selected_counts)) if selected_counts else 0,
+                        "n_samples": int(decorated.get("sample_count", 0)),
+                        "directional_accuracy": decorated.get("directional_accuracy", np.nan),
+                        "balanced_accuracy": decorated.get("balanced_accuracy", np.nan),
+                        "brier_score": decorated.get("brier_score", np.nan),
+                        "calibration_error": decorated.get("calibration_error", np.nan),
+                        "sharpe": decorated.get("sharpe", np.nan),
+                        "max_drawdown": decorated.get("max_drawdown", np.nan),
+                        "net_return": decorated.get("tc_adjusted_return", np.nan),
+                        "beats_buy_hold": bool(decorated.get("beats_buy_hold_direction", False)),
+                        "beats_momentum_30d": bool(decorated.get("beats_momentum_30d", False)),
+                        "beats_momentum_90d": bool(decorated.get("beats_momentum_90d", False)),
+                        "beats_random_baseline": bool(decorated.get("beats_random_baseline", False)),
+                        "selection_eligible": bool(decorated.get("selection_eligible", False)),
+                        "promotion_eligible": promotion_eligible,
+                        "reliability_label": decorated.get("reliability_label", "Low confidence"),
+                        "window_fingerprint": fingerprint,
+                        "rejection_reason": _pruned_rejection_reason(decorated, promotion_eligible, base_ok, stability_ok),
+                    }
+                )
+                signal_rows.append(
+                    signal_quality_row(
+                        run_id,
+                        asset_id,
+                        horizon,
+                        window_type,
+                        candidate_name,
+                        model_name,
+                        predictions_by_model[model_name],
+                        decorated,
+                        config,
+                        quick=quick,
+                    )
+                )
+    diagnostics = {
+        "factor_quality_scorecard.csv": factor_quality_scorecard(run_id, raw, feature_result, config),
+        "signal_quality_report.csv": pd.DataFrame(signal_rows),
+        "pruned_feature_leaderboard.csv": pd.DataFrame(leaderboard_rows),
+    }
+    return diagnostics
+
+
 DERIVATIVE_DATASETS = {
     "binance_funding_rate": {
         "metric": "funding_rate",
@@ -1164,6 +1723,120 @@ def write_derivatives_recovery_report(output_dir: Path) -> Path:
     return path
 
 
+def write_feature_pruning_summary(output_dir: Path) -> Path:
+    manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    latest = pd.read_csv(output_dir / "latest_forecast.csv")
+    leaderboard = pd.read_csv(output_dir / "model_leaderboard.csv")
+    pruned = pd.read_csv(output_dir / "csv" / "pruned_feature_leaderboard.csv")
+    signal = pd.read_csv(output_dir / "csv" / "signal_quality_report.csv")
+    factor = pd.read_csv(output_dir / "csv" / "factor_quality_scorecard.csv")
+    asset_name = str(manifest.get("asset_name") or manifest.get("asset_id") or "asset")
+    primary = latest[latest["is_primary_objective"] == True].iloc[0]
+    official_30 = leaderboard[(leaderboard["horizon"] == 30) & (leaderboard["window_type"] == "official_monthly")].copy()
+    baseline_models = {"buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"}
+    base_ml = official_30[~official_30["model"].isin(baseline_models)].sort_values("directional_accuracy", ascending=False).head(1)
+    base_baseline = official_30[official_30["model"].isin(baseline_models)].sort_values("directional_accuracy", ascending=False).head(1)
+    pruned_30 = pruned[(pruned["horizon"] == 30) & (pruned["window_type"] == "official_monthly")].copy()
+    pruned_ml = pruned_30[~pruned_30["model_name"].isin(baseline_models)].sort_values(
+        ["promotion_eligible", "directional_accuracy", "brier_score", "sharpe", "max_drawdown", "calibration_error"],
+        ascending=[False, False, True, False, False, True],
+        na_position="last",
+    )
+    best_pruned = pruned_ml.head(1)
+    promoted = pruned_ml[pruned_ml["promotion_eligible"] == True]
+    signal_30 = signal[(signal["horizon"] == 30) & (signal["window_type"] == "official_monthly")]
+    best_signal = signal_30.sort_values(["long_hit_rate", "net_return"], ascending=[False, False], na_position="last").head(5)
+    factor_30 = factor[(factor["horizon"] == 30) & (factor["window_type"] == "official_monthly")]
+    top_factors = factor_30.sort_values("information_coefficient", key=lambda s: s.abs(), ascending=False, na_position="last").head(10)
+    dropped = factor_30[factor_30["keep_candidate"] == False]["drop_reason"].value_counts().head(5)
+
+    report = [
+        "# Feature Pruning Summary",
+        "",
+        "## Run Summary",
+        f"- Asset: `{asset_name}`",
+        f"- Run ID: `{manifest.get('run_id')}`",
+        f"- Selected model: `{primary['selected_model']}`",
+        f"- Signal: `{primary['signal']}`",
+        f"- Reliability: `{primary['reliability_label']}`",
+    ]
+    if not base_ml.empty:
+        row = base_ml.iloc[0]
+        report.append(
+            f"- Current all-feature best ML: `{row['model']}` at `{_fmt_pct(row['directional_accuracy'])}` accuracy, "
+            f"Brier `{_fmt_num(row['brier_score'], 3)}`, net return `{_fmt_pct(row['tc_adjusted_return'])}`."
+        )
+    if not base_baseline.empty:
+        row = base_baseline.iloc[0]
+        report.append(f"- Best baseline: `{row['model']}` at `{_fmt_pct(row['directional_accuracy'])}` accuracy.")
+
+    report.extend(["", "## Best Pruned Candidate"])
+    if best_pruned.empty:
+        report.append("- No pruned candidate produced a valid 30d official ML result.")
+    else:
+        row = best_pruned.iloc[0]
+        report.append(
+            f"- `{row['candidate_feature_set']}` / `{row['model_name']}`: samples `{int(row['n_samples'])}`, "
+            f"accuracy `{_fmt_pct(row['directional_accuracy'])}`, Brier `{_fmt_num(row['brier_score'], 3)}`, "
+            f"calibration `{_fmt_num(row['calibration_error'], 3)}`, Sharpe `{_fmt_num(row['sharpe'])}`, "
+            f"drawdown `{_fmt_pct(row['max_drawdown'])}`, net return `{_fmt_pct(row['net_return'])}`."
+        )
+        report.append(f"- Promotion eligible: `{bool(row['promotion_eligible'])}`. Reason: `{row['rejection_reason']}`")
+
+    report.extend(["", "## Promotion Decision"])
+    if promoted.empty:
+        report.append("- No pruned feature set passed the strict promotion rules. The official conclusion is unchanged.")
+    else:
+        names = [f"{r['candidate_feature_set']} / {r['model_name']}" for _, r in promoted.iterrows()]
+        report.append(f"- Promotion candidates found: `{', '.join(names)}`. Review before deploying a changed official signal.")
+
+    report.extend(["", "## Signal Quality"])
+    if best_signal.empty:
+        report.append("- Signal quality rows were unavailable.")
+    else:
+        for _, row in best_signal.iterrows():
+            report.append(
+                f"- `{row['candidate_feature_set']}` / `{row['model_name']}`: long signals `{int(row['n_long_signals'])}`, "
+                f"abstention `{_fmt_pct(row['abstention_rate'])}`, long hit rate `{_fmt_pct(row['long_hit_rate'])}`, "
+                f"long average return `{_fmt_pct(row['long_avg_return'])}`, net return `{_fmt_pct(row['net_return'])}`."
+            )
+
+    report.extend(["", "## Strongest 30d Factors"])
+    if top_factors.empty:
+        report.append("- No factor scorecard rows were available.")
+    else:
+        for _, row in top_factors.iterrows():
+            report.append(
+                f"- `{row['feature_name']}` (`{row['feature_group']}`): IC `{_fmt_num(row['information_coefficient'], 3)}`, "
+                f"p-value `{_fmt_num(row['ic_p_value'], 3)}`, coverage `{_fmt_pct(row['coverage_pct'])}`, "
+                f"keep `{bool(row['keep_candidate'])}`."
+            )
+
+    report.extend(["", "## Noisy Or Redundant Factor Reasons"])
+    if dropped.empty:
+        report.append("- No drop reasons were recorded.")
+    else:
+        for reason, count in dropped.items():
+            report.append(f"- `{reason}`: `{int(count)}` features")
+
+    neutral_justified = str(primary["signal"]) == "neutral" and (
+        str(primary["selected_model"]) == "no_valid_edge"
+        or str(primary["probability_confidence"]) == "Low confidence"
+        or float(primary.get("predicted_probability_up", 0.5)) < 0.55
+    )
+    report.extend(
+        [
+            "",
+            "## Recommendation",
+            f"- Neutral signal justified: `{neutral_justified}`",
+            "- Next step: only consider more model complexity after a promoted feature set survives these pruning and signal-quality checks.",
+        ]
+    )
+    path = output_dir / "feature_pruning_summary.md"
+    path.write_text("\n".join(report) + "\n", encoding="utf-8")
+    return path
+
+
 def write_diagnostics(
     *,
     output_dir: Path,
@@ -1177,6 +1850,14 @@ def write_diagnostics(
     quick: bool,
 ) -> Dict[str, pd.DataFrame]:
     selected_model = str(latest.loc[latest["is_primary_objective"] == True, "selected_model"].iloc[0])
+    pruning = pruned_feature_diagnostics(
+        run_id,
+        raw,
+        feature_result,
+        config,
+        base_outputs["model_leaderboard.csv"],
+        quick=quick,
+    )
     diagnostics = {
         "model_rejection_reasons.csv": model_rejection_reasons(base_outputs["backtest_summary.csv"], selected_model),
         "feature_signal_diagnostics.csv": feature_signal_diagnostics(run_id, raw, feature_result, config),
@@ -1193,9 +1874,11 @@ def write_diagnostics(
         "polymarket_coverage.csv": polymarket_coverage(run_id, raw, feature_result, base_outputs["data_availability.csv"]),
         "polymarket_feature_diagnostics.csv": polymarket_feature_diagnostics(run_id, raw, feature_result, config),
         "polymarket_impact.csv": polymarket_impact(run_id, raw, feature_result, config, quick=quick),
+        **pruning,
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)
     write_full_refresh_diagnostics_report(output_dir, baseline_dir)
     write_derivatives_recovery_report(output_dir)
+    write_feature_pruning_summary(output_dir)
     return diagnostics

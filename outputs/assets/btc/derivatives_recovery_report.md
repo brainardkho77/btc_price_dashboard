@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `btc_research_20260504T051147Z`
+- Run ID: `btc_research_20260504T121835Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -13,11 +13,11 @@
 - `Binance USD-M Futures` / `funding_rate`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 - `manual_csv` / `funding_rate`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 - `Binance USD-M Futures` / `open_interest`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
-- `manual_csv` / `open_interest`: `worked`, rows `2071`, dates `2020-09-01` to `2026-05-03`, missing `50.0%`, used `True`
+- `manual_csv` / `open_interest`: `worked`, rows `2072`, dates `2020-09-01` to `2026-05-04`, missing `50.0%`, used `True`
 - `Binance USD-M Futures` / `long_short_ratio`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
-- `manual_csv` / `long_short_ratio`: `worked`, rows `2052`, dates `2020-09-01` to `2026-05-03`, missing `50.0%`, used `True`
+- `manual_csv` / `long_short_ratio`: `worked`, rows `2053`, dates `2020-09-01` to `2026-05-04`, missing `50.0%`, used `True`
 - `Binance USD-M Futures` / `taker_buy_sell_ratio`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
-- `manual_csv` / `taker_buy_sell_ratio`: `worked`, rows `1943`, dates `2020-09-01` to `2026-05-03`, missing `50.0%`, used `True`
+- `manual_csv` / `taker_buy_sell_ratio`: `worked`, rows `1944`, dates `2020-09-01` to `2026-05-04`, missing `50.0%`, used `True`
 - `Binance USD-M Futures` / `basis`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 - `manual_csv` / `basis`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 

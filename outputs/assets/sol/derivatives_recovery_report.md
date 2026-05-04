@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `sol_research_20260504T045552Z`
+- Run ID: `sol_research_20260504T130959Z`
 - Selected model: `random_forest`
 - Signal: `neutral`
 - Reliability: `Medium confidence`

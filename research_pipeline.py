@@ -1534,7 +1534,28 @@ def add_research_external_features(released_raw: pd.DataFrame, out: pd.DataFrame
         prefix = f"derivatives_{column.replace('binance_', '')}"
         out[prefix] = series
         out[f"{prefix}_chg_7d"] = series.diff(7)
+        out[f"{prefix}_chg_30d"] = series.diff(30)
         out[f"{prefix}_z_90d"] = _zscore(series, 90, 30)
+        out[f"{prefix}_z_365d"] = _zscore(series, 365, 120)
+
+    if "binance_sum_open_interest_value" in released_raw:
+        oi_value = pd.to_numeric(released_raw["binance_sum_open_interest_value"], errors="coerce")
+        market_cap = pd.to_numeric(released_raw.get("cm_market_cap_usd", pd.Series(index=released_raw.index, dtype=float)), errors="coerce")
+        spot = pd.to_numeric(released_raw.get("asset_close", released_raw.get("btc_close", pd.Series(index=released_raw.index, dtype=float))), errors="coerce")
+        out["derivatives_open_interest_value_to_market_cap"] = oi_value / market_cap.replace(0, np.nan)
+        out["derivatives_open_interest_value_to_spot"] = oi_value / spot.replace(0, np.nan)
+
+    price = pd.to_numeric(released_raw.get("asset_close", released_raw.get("btc_close", pd.Series(index=released_raw.index, dtype=float))), errors="coerce")
+    momentum_90 = _safe_log(price / price.shift(90))
+    momentum_regime = np.sign(momentum_90).replace(0, np.nan)
+    for feature in [
+        "derivatives_funding_rate_z_90d",
+        "derivatives_sum_open_interest_value_z_90d",
+        "derivatives_long_short_ratio_z_90d",
+        "derivatives_taker_buy_sell_ratio_z_90d",
+    ]:
+        if feature in out:
+            out[f"{feature}_x_momentum_90d_regime"] = out[feature] * momentum_regime
 
     if "stablecoin_total_circulating_usd" in released_raw:
         supply = pd.to_numeric(released_raw["stablecoin_total_circulating_usd"], errors="coerce")

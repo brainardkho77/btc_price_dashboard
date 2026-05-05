@@ -27,14 +27,20 @@ from research_pipeline import (
 )
 from diagnostic_outputs import (
     _btc_trend_masks,
+    _material_worsening,
+    active_signal_floor,
+    asset_feature_set_and_policy_diagnostics,
     candidate_feature_sets,
     derivatives_coverage,
     feature_pruning_report,
     feature_group_for_feature,
+    high_confidence_signal_floor,
+    is_official_long_policy_allowed,
+    latest_signal_interpretation_frame,
     select_nested_pruned_features,
     sol_stability_candidate_pairs,
 )
-from schemas import DIAGNOSTIC_OUTPUT_SCHEMAS, empty_diagnostic_frame, validate_frame
+from schemas import DIAGNOSTIC_OUTPUT_SCHEMAS, OUTPUT_SCHEMAS, empty_diagnostic_frame, empty_output_frame, validate_frame
 
 
 def synthetic_research_raw(rows=1500):
@@ -240,8 +246,11 @@ def test_diagnostic_schemas_include_required_outputs():
         "pruned_feature_leaderboard.csv",
         "feature_pruning_report.csv",
         "sol_stability_report.csv",
+        "signal_policy_report.csv",
+        "asset_feature_set_leaderboard.csv",
     ]:
         assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
+    assert "latest_signal_interpretation.csv" in OUTPUT_SCHEMAS
     assert "balanced_accuracy" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
     assert "calibration_error" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
     assert "beats_momentum_90d" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
@@ -251,6 +260,8 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "correlation_cluster" in DIAGNOSTIC_OUTPUT_SCHEMAS["factor_quality_scorecard.csv"]
     assert "improvement_vs_all_features_accuracy" in DIAGNOSTIC_OUTPUT_SCHEMAS["feature_pruning_report.csv"]
     assert "passes_stability_check" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_stability_report.csv"]
+    assert "active_signal_count" in DIAGNOSTIC_OUTPUT_SCHEMAS["signal_policy_report.csv"]
+    assert "promotion_eligible" in DIAGNOSTIC_OUTPUT_SCHEMAS["asset_feature_set_leaderboard.csv"]
 
 
 def test_btc_up_down_slice_creation_uses_known_btc_history():
@@ -349,9 +360,118 @@ def test_feature_pruning_report_marks_unstable_candidates_not_promoted():
 
 
 def test_streamlit_optional_new_diagnostics_can_be_empty_with_schema():
-    for filename in ["feature_pruning_report.csv", "sol_stability_report.csv"]:
+    for filename in ["feature_pruning_report.csv", "sol_stability_report.csv", "signal_policy_report.csv", "asset_feature_set_leaderboard.csv"]:
         frame = empty_diagnostic_frame(filename)
         validate_frame(filename, frame)
+    validate_frame("latest_signal_interpretation.csv", empty_output_frame("latest_signal_interpretation.csv"))
+
+
+def test_signal_policy_threshold_and_active_floors_are_enforced():
+    assert is_official_long_policy_allowed(0.50, 0.05) is False
+    assert is_official_long_policy_allowed(0.55, 0.0) is True
+    assert active_signal_floor(36) == 12
+    assert high_confidence_signal_floor(36) == 18
+    assert active_signal_floor(100) == 20
+    assert high_confidence_signal_floor(100) == 30
+
+
+def test_no_valid_edge_keeps_neutral_no_edge_interpretation():
+    latest = pd.DataFrame(
+        [
+            {
+                "run_id": "btc_research_test",
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "as_of_date": "2026-01-01",
+                "horizon": 30,
+                "selected_model": "no_valid_edge",
+                "predicted_probability_up": 0.50,
+                "expected_return": 0.0,
+                "reliability_label": "Low confidence",
+                "is_primary_objective": True,
+            }
+        ]
+    )
+    out = latest_signal_interpretation_frame(
+        "btc_research_test",
+        "2026-01-01T00:00:00+00:00",
+        latest,
+        empty_diagnostic_frame("signal_policy_report.csv"),
+        empty_diagnostic_frame("asset_feature_set_leaderboard.csv"),
+    )
+    row = out.iloc[0]
+    assert row["selected_model"] == "no_valid_edge"
+    assert row["strategy_action"] == "cash"
+    assert row["risk_label"] == "Neutral / no edge"
+    assert bool(row["signal_policy_promoted"]) is False
+
+
+def test_signal_policy_cannot_change_selected_model_and_risk_off_is_not_short():
+    latest = pd.DataFrame(
+        [
+            {
+                "run_id": "sol_research_test",
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "as_of_date": "2026-01-01",
+                "horizon": 30,
+                "selected_model": "random_forest",
+                "predicted_probability_up": 0.34,
+                "expected_return": -0.12,
+                "reliability_label": "Medium confidence",
+                "is_primary_objective": True,
+            }
+        ]
+    )
+    policy = pd.DataFrame(
+        [
+            {
+                "run_id": "sol_research_test",
+                "asset_id": "sol",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "all_features",
+                "model_name": "random_forest",
+                "n_samples": 36,
+                "policy_source": "train_calibration_only",
+                "long_threshold_median": 0.55,
+                "expected_return_min_median": 0.0,
+                "threshold_050_used": False,
+                "threshold_050_diagnostic_only": True,
+                "active_signal_count": 12,
+                "active_coverage": 0.33,
+                "abstention_rate": 0.67,
+                "active_hit_rate": 0.70,
+                "missed_up_month_rate": 0.20,
+                "after_cost_return": 0.20,
+                "max_drawdown": -0.10,
+                "bootstrap_ci_low": 0.52,
+                "bootstrap_ci_high": 0.84,
+                "permutation_p_value": 0.05,
+                "risk_off_count": 10,
+                "risk_off_rate": 0.28,
+                "risk_off_hit_rate": 0.70,
+                "risk_off_avg_return": -0.08,
+                "risk_off_probability_threshold_median": 0.40,
+                "valid_signal_policy": True,
+                "high_confidence_policy_eligible": False,
+                "promoted_signal_policy": True,
+                "rejection_reason": "promotion_eligible",
+            }
+        ]
+    )
+    features = empty_diagnostic_frame("asset_feature_set_leaderboard.csv")
+    out = latest_signal_interpretation_frame("sol_research_test", "2026-01-01T00:00:00+00:00", latest, policy, features)
+    row = out.iloc[0]
+    assert row["selected_model"] == "random_forest"
+    assert row["strategy_action"] == "cash"
+    assert row["risk_label"] == "High downside risk"
+
+
+def test_material_worsening_rules_reject_candidates():
+    reference = {"brier_score": 0.20, "calibration_error": 0.08, "max_drawdown": -0.15}
+    assert _material_worsening({"brier_score": 0.235, "calibration_error": 0.08, "max_drawdown": -0.15}, reference) is True
+    assert _material_worsening({"brier_score": 0.20, "calibration_error": 0.115, "max_drawdown": -0.15}, reference) is True
+    assert _material_worsening({"brier_score": 0.20, "calibration_error": 0.08, "max_drawdown": -0.27}, reference) is True
+    assert _material_worsening({"brier_score": 0.21, "calibration_error": 0.09, "max_drawdown": -0.20}, reference) is False
 
 
 def test_feature_group_mapping_is_stable():

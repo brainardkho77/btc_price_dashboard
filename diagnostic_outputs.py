@@ -10,10 +10,20 @@ import numpy as np
 import pandas as pd
 
 from research_config import MIN_SAMPLE_THRESHOLDS, ResearchConfig
-from schemas import empty_diagnostic_frame, write_diagnostic_csv
+from schemas import empty_diagnostic_frame, empty_output_frame, write_diagnostic_csv, write_schema_csv
 
 
 BASELINE_DIR = Path("/tmp/btc_refresh_baseline")
+LONG_POLICY_THRESHOLDS = (0.50, 0.55, 0.60, 0.65)
+EXPECTED_RETURN_FILTERS = (0.0, 0.02, 0.05)
+RISK_OFF_PROBABILITY_THRESHOLDS = (0.35, 0.40, 0.45)
+VALID_ACTIVE_MIN_COUNT = 12
+VALID_ACTIVE_MIN_RATIO = 0.20
+HIGH_CONFIDENCE_ACTIVE_MIN_COUNT = 18
+HIGH_CONFIDENCE_ACTIVE_MIN_RATIO = 0.30
+MATERIAL_BRIER_WORSENING = 0.03
+MATERIAL_CALIBRATION_WORSENING = 0.03
+MATERIAL_DRAWDOWN_WORSENING = 0.10
 
 
 def preserve_quick_baseline(output_dir: Path, refresh: bool) -> Optional[Path]:
@@ -87,6 +97,18 @@ def min_samples_for(horizon: int, window_type: str) -> int:
     if horizon == 180:
         return 8
     return 12
+
+
+def active_signal_floor(n_samples: int) -> int:
+    return int(max(VALID_ACTIVE_MIN_COUNT, math.ceil(float(n_samples) * VALID_ACTIVE_MIN_RATIO)))
+
+
+def high_confidence_signal_floor(n_samples: int) -> int:
+    return int(max(HIGH_CONFIDENCE_ACTIVE_MIN_COUNT, math.ceil(float(n_samples) * HIGH_CONFIDENCE_ACTIVE_MIN_RATIO)))
+
+
+def is_official_long_policy_allowed(long_threshold: float, expected_return_min: float = 0.0) -> bool:
+    return bool(float(long_threshold) >= 0.55)
 
 
 def model_rejection_reasons(summary: pd.DataFrame, selected_model: str) -> pd.DataFrame:
@@ -378,6 +400,185 @@ def _max_drawdown_from_returns(returns: pd.Series) -> float:
         return np.nan
     equity = (1 + returns).cumprod()
     return float((equity / equity.cummax() - 1).min())
+
+
+def _policy_frame(
+    preds: pd.DataFrame,
+    long_threshold: float,
+    expected_return_min: float,
+    transaction_cost_bps: float,
+    *,
+    position_col: str = "policy_position",
+) -> pd.DataFrame:
+    frame = preds.copy()
+    expected_return = np.exp(frame["expected_log_return"].astype(float)) - 1
+    frame[position_col] = (
+        (frame["probability_up"].astype(float) >= float(long_threshold))
+        & (expected_return >= float(expected_return_min))
+    ).astype(float)
+    cost_rate = float(transaction_cost_bps) / 10000.0
+    frame["policy_turnover"] = frame[position_col].diff().abs().fillna(frame[position_col].abs())
+    frame["policy_return_after_costs"] = frame[position_col] * frame["actual_return"].astype(float) - frame["policy_turnover"] * cost_rate
+    return frame
+
+
+def _policy_score(
+    calibration: pd.DataFrame,
+    long_threshold: float,
+    expected_return_min: float,
+    transaction_cost_bps: float,
+) -> dict:
+    if calibration.empty:
+        return {"active_count": 0, "active_coverage": 0.0, "hit_rate": np.nan, "net_return": -np.inf}
+    frame = _policy_frame(calibration, long_threshold, expected_return_min, transaction_cost_bps)
+    active = frame[frame["policy_position"] > 0]
+    return {
+        "active_count": int(len(active)),
+        "active_coverage": float(len(active) / len(frame)) if len(frame) else 0.0,
+        "hit_rate": float(active["actual_up"].astype(int).mean()) if not active.empty else np.nan,
+        "net_return": float((1 + frame["policy_return_after_costs"]).prod() - 1) if len(frame) else -np.inf,
+    }
+
+
+def select_signal_policy_from_calibration(calibration: pd.DataFrame, config: ResearchConfig) -> dict:
+    if calibration.empty:
+        return {
+            "long_threshold": 0.55,
+            "expected_return_min": 0.0,
+            "policy_valid": False,
+            "policy_source": "train_calibration_only",
+            "policy_rejection_reason": "empty_calibration",
+        }
+    min_active = active_signal_floor(len(calibration))
+    candidates = []
+    for long_threshold in LONG_POLICY_THRESHOLDS:
+        for expected_min in EXPECTED_RETURN_FILTERS:
+            score = _policy_score(calibration, long_threshold, expected_min, config.transaction_cost_bps)
+            diagnostic_only = not is_official_long_policy_allowed(long_threshold, expected_min)
+            valid = bool(
+                not diagnostic_only
+                and score["active_count"] >= min_active
+                and score["active_coverage"] >= VALID_ACTIVE_MIN_RATIO
+                and score["net_return"] > 0
+                and pd.notna(score["hit_rate"])
+                and score["hit_rate"] >= 0.50
+            )
+            candidates.append(
+                {
+                    "long_threshold": float(long_threshold),
+                    "expected_return_min": float(expected_min),
+                    "diagnostic_only": diagnostic_only,
+                    "valid": valid,
+                    **score,
+                }
+            )
+    valid_candidates = [row for row in candidates if row["valid"]]
+    if not valid_candidates:
+        return {
+            "long_threshold": 0.55,
+            "expected_return_min": 0.0,
+            "policy_valid": False,
+            "policy_source": "train_calibration_only",
+            "policy_rejection_reason": "no_train_calibration_policy_met_active_count_return_hit_rate_gates",
+        }
+    selected = sorted(
+        valid_candidates,
+        key=lambda row: (
+            row["net_return"],
+            row["hit_rate"] if pd.notna(row["hit_rate"]) else -np.inf,
+            row["active_count"],
+            -row["long_threshold"],
+        ),
+        reverse=True,
+    )[0]
+    return {
+        "long_threshold": float(selected["long_threshold"]),
+        "expected_return_min": float(selected["expected_return_min"]),
+        "policy_valid": True,
+        "policy_source": "train_calibration_only",
+        "policy_rejection_reason": "",
+    }
+
+
+def select_risk_off_threshold_from_calibration(calibration: pd.DataFrame) -> dict:
+    if calibration.empty:
+        return {
+            "risk_off_threshold": np.nan,
+            "risk_off_bucket_count": 0,
+            "risk_off_bucket_avg_return": np.nan,
+            "risk_off_threshold_source": "unavailable",
+        }
+    min_bucket = int(max(8, math.ceil(len(calibration) * 0.10)))
+    candidates = []
+    for threshold in RISK_OFF_PROBABILITY_THRESHOLDS:
+        bucket = calibration[calibration["probability_up"].astype(float) <= float(threshold)]
+        avg_return = float(bucket["actual_return"].mean()) if not bucket.empty else np.nan
+        hit_rate = float((bucket["actual_return"] < 0).mean()) if not bucket.empty else np.nan
+        valid = bool(len(bucket) >= min_bucket and pd.notna(avg_return) and avg_return < 0 and pd.notna(hit_rate) and hit_rate >= 0.50)
+        candidates.append(
+            {
+                "risk_off_threshold": float(threshold),
+                "risk_off_bucket_count": int(len(bucket)),
+                "risk_off_bucket_avg_return": avg_return,
+                "risk_off_hit_rate": hit_rate,
+                "valid": valid,
+            }
+        )
+    valid_candidates = [row for row in candidates if row["valid"]]
+    if not valid_candidates:
+        return {
+            "risk_off_threshold": np.nan,
+            "risk_off_bucket_count": 0,
+            "risk_off_bucket_avg_return": np.nan,
+            "risk_off_hit_rate": np.nan,
+            "risk_off_threshold_source": "unavailable",
+        }
+    selected = sorted(valid_candidates, key=lambda row: (row["risk_off_threshold"], row["risk_off_bucket_count"]), reverse=True)[0]
+    selected["risk_off_threshold_source"] = "train_calibration_probability_bucket"
+    return selected
+
+
+def _add_signal_policy_columns(test_preds: pd.DataFrame, calibration_eval: pd.DataFrame, config: ResearchConfig) -> pd.DataFrame:
+    policy = select_signal_policy_from_calibration(calibration_eval, config)
+    risk = select_risk_off_threshold_from_calibration(calibration_eval)
+    out = test_preds.copy()
+    expected_return = np.exp(out["expected_log_return"].astype(float)) - 1
+    long_threshold = float(policy["long_threshold"])
+    expected_min = float(policy["expected_return_min"])
+    risk_threshold = risk.get("risk_off_threshold", np.nan)
+    out["policy_long_threshold"] = long_threshold
+    out["policy_expected_return_min"] = expected_min
+    out["policy_source"] = policy["policy_source"]
+    out["policy_valid_in_calibration"] = bool(policy["policy_valid"])
+    out["policy_rejection_reason"] = policy["policy_rejection_reason"]
+    out["policy_position"] = ((out["probability_up"].astype(float) >= long_threshold) & (expected_return >= expected_min)).astype(float)
+    out["risk_off_probability_threshold"] = risk_threshold
+    out["risk_off_threshold_source"] = risk.get("risk_off_threshold_source", "unavailable")
+    out["risk_off_bucket_count_train"] = int(risk.get("risk_off_bucket_count", 0) or 0)
+    out["risk_off_bucket_avg_return_train"] = risk.get("risk_off_bucket_avg_return", np.nan)
+    out["risk_off_flag"] = (
+        out["probability_up"].astype(float) <= float(risk_threshold)
+        if pd.notna(risk_threshold)
+        else False
+    )
+    out["high_downside_flag"] = (
+        out["risk_off_flag"].astype(bool)
+        & (out["probability_up"].astype(float) <= 0.35)
+        & (expected_return < -0.10)
+        & (out["risk_off_bucket_count_train"].astype(int) >= 8)
+    )
+    return out
+
+
+def _policy_returns_for_predictions(preds: pd.DataFrame, transaction_cost_bps: float) -> pd.DataFrame:
+    frame = preds.copy()
+    if "policy_position" not in frame:
+        frame["policy_position"] = 0.0
+    cost_rate = float(transaction_cost_bps) / 10000.0
+    frame["policy_turnover"] = frame["policy_position"].astype(float).diff().abs().fillna(frame["policy_position"].astype(float).abs())
+    frame["policy_return_after_costs"] = frame["policy_position"].astype(float) * frame["actual_return"].astype(float) - frame["policy_turnover"] * cost_rate
+    frame["policy_equity"] = (1 + frame["policy_return_after_costs"]).cumprod()
+    return frame
 
 
 def _regime_masks(raw: pd.DataFrame, dates: pd.DatetimeIndex) -> Dict[str, pd.Series]:
@@ -734,9 +935,13 @@ def candidate_feature_sets(feature_cols: Sequence[str], asset_id: str) -> Dict[s
     }
     cycle_cols = [col for col in cols if "cycle_" in col]
     if asset_id == "btc":
+        derivatives_pack = groups.get("derivatives_only", [])
+        dollar_rates_cycle = list(dict.fromkeys(only("dollar_rates_only") + cycle_cols))
         sets.update(
             {
-                "btc_dollar_rates_cycle": list(dict.fromkeys(only("dollar_rates_only") + cycle_cols)),
+                "btc_dollar_rates_cycle": dollar_rates_cycle,
+                "btc_derivatives_pack": derivatives_pack,
+                "btc_dollar_rates_cycle_plus_derivatives_pack": list(dict.fromkeys(dollar_rates_cycle + derivatives_pack)),
                 "btc_core_dollar_derivatives_cycle": list(
                     dict.fromkeys(only("price_momentum_only", "dollar_rates_only", "derivatives_only") + cycle_cols)
                 ),
@@ -858,10 +1063,17 @@ def _predict_model_windows_nested_pruned(
         model.fit(fit_train[selected_cols], fit_train["target_up"].astype(int))
         raw_cal_prob = model.predict_proba(cal[selected_cols])[:, 1]
         calibrated_cal_prob, _ = _calibrate_probabilities(raw_cal_prob, raw_cal_prob, cal["target_up"].astype(int).to_numpy())
+        fit_up = fit_train.loc[fit_train["target_up"] == 1, "target_log_return"]
+        fit_down = fit_train.loc[fit_train["target_up"] == 0, "target_log_return"]
+        fit_mean_up = float(fit_up.mean()) if len(fit_up) else float(fit_train["target_log_return"].mean())
+        fit_mean_down = float(fit_down.mean()) if len(fit_down) else float(fit_train["target_log_return"].mean())
+        calibrated_cal_expected = calibrated_cal_prob * fit_mean_up + (1 - calibrated_cal_prob) * fit_mean_down
         cal_eval = pd.DataFrame(
             {
                 "probability_up": calibrated_cal_prob,
+                "expected_log_return": calibrated_cal_expected,
                 "actual_return": np.exp(cal["target_log_return"].astype(float)) - 1,
+                "actual_up": cal["target_up"].astype(int),
             },
             index=cal.index,
         )
@@ -877,28 +1089,30 @@ def _predict_model_windows_nested_pruned(
         expected_log = prob_up * mean_up + (1 - prob_up) * mean_down
         actual_log = float(test["target_log_return"].iloc[0])
         selected_counts.append(len(selected_cols))
-        rows.append(
-            {
-                "date": window.test_date,
-                "model": model_name,
-                "horizon": window.horizon,
-                "window_type": window.window_type,
-                "is_official": window.is_official,
-                "probability_up": prob_up,
-                "probability_confidence": prob_conf,
-                "expected_log_return": expected_log,
-                "actual_log_return": actual_log,
-                "actual_return": math.exp(actual_log) - 1,
-                "actual_up": int(actual_log > 0),
-                "threshold": threshold,
-                "threshold_source": "nested_feature_selection_and_calibration",
-                "predicted_up": int(prob_up >= threshold),
-                "position": float(prob_up >= threshold),
-                "train_rows": int(len(fit_train)),
-                "calibration_rows": int(len(cal)),
-                "feature_count": int(len(selected_cols)),
-            }
-        )
+        row = {
+            "date": window.test_date,
+            "model": model_name,
+            "horizon": window.horizon,
+            "window_type": window.window_type,
+            "is_official": window.is_official,
+            "probability_up": prob_up,
+            "probability_confidence": prob_conf,
+            "expected_log_return": expected_log,
+            "actual_log_return": actual_log,
+            "actual_return": math.exp(actual_log) - 1,
+            "actual_up": int(actual_log > 0),
+            "threshold": threshold,
+            "threshold_source": "nested_feature_selection_and_calibration",
+            "predicted_up": int(prob_up >= threshold),
+            "position": float(prob_up >= threshold),
+            "train_rows": int(len(fit_train)),
+            "calibration_rows": int(len(cal)),
+            "feature_count": int(len(selected_cols)),
+        }
+        policy_input = pd.DataFrame([row]).set_index("date")
+        policy_row = _add_signal_policy_columns(policy_input, cal_eval, config).iloc[0].to_dict()
+        row.update({key: policy_row[key] for key in policy_row if key not in row or key.startswith(("policy_", "risk_", "high_"))})
+        rows.append(row)
     if not rows:
         return pd.DataFrame(), selected_counts
     return pd.DataFrame(rows).set_index("date").sort_index(), selected_counts
@@ -1564,6 +1778,770 @@ def _predict_candidate_model(
     if not windows:
         return pd.DataFrame()
     return predict_model_windows(model_name, target_frame, candidate_cols, windows, config, quick=quick)
+
+
+def _predict_direct_model_windows_with_policy(
+    model_name: str,
+    frame: pd.DataFrame,
+    feature_cols: Sequence[str],
+    windows: Sequence[object],
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> pd.DataFrame:
+    from research_pipeline import _calibrate_probabilities, _model_pipeline, _split_fit_calibration, tune_threshold_nested
+
+    rows = []
+    valid = frame.dropna(subset=["target_log_return", "target_up", "asset_close"]).copy()
+    for idx, window in enumerate(windows):
+        train = valid.loc[valid.index < window.test_date].copy()
+        test = valid.loc[[window.test_date]].copy()
+        if train.empty or test.empty:
+            continue
+        fit_train, cal = _split_fit_calibration(train, config)
+        usable_cols = [c for c in feature_cols if c in fit_train and fit_train[c].notna().any()]
+        if len(usable_cols) < 5 or fit_train["target_up"].nunique() < 2 or cal["target_up"].nunique() < 2:
+            continue
+
+        model = _model_pipeline(model_name, config.random_seed + idx, quick)
+        model.fit(fit_train[usable_cols], fit_train["target_up"].astype(int))
+        raw_cal_prob = model.predict_proba(cal[usable_cols])[:, 1]
+        calibrated_cal_prob, _ = _calibrate_probabilities(raw_cal_prob, raw_cal_prob, cal["target_up"].astype(int).to_numpy())
+        fit_up = fit_train.loc[fit_train["target_up"] == 1, "target_log_return"]
+        fit_down = fit_train.loc[fit_train["target_up"] == 0, "target_log_return"]
+        fit_mean_up = float(fit_up.mean()) if len(fit_up) else float(fit_train["target_log_return"].mean())
+        fit_mean_down = float(fit_down.mean()) if len(fit_down) else float(fit_train["target_log_return"].mean())
+        cal_expected = calibrated_cal_prob * fit_mean_up + (1 - calibrated_cal_prob) * fit_mean_down
+        cal_eval = pd.DataFrame(
+            {
+                "probability_up": calibrated_cal_prob,
+                "expected_log_return": cal_expected,
+                "actual_return": np.exp(cal["target_log_return"].astype(float)) - 1,
+                "actual_up": cal["target_up"].astype(int),
+            },
+            index=cal.index,
+        )
+        threshold = tune_threshold_nested(cal_eval, config.transaction_cost_bps)
+
+        raw_test_prob = model.predict_proba(test[usable_cols])[:, 1]
+        prob, prob_conf = _calibrate_probabilities(raw_test_prob, raw_cal_prob, cal["target_up"].astype(int).to_numpy())
+        prob_up = float(prob[0])
+        cal_up = cal.loc[cal["target_up"] == 1, "target_log_return"]
+        cal_down = cal.loc[cal["target_up"] == 0, "target_log_return"]
+        mean_up = float(cal_up.mean()) if len(cal_up) else float(cal["target_log_return"].mean())
+        mean_down = float(cal_down.mean()) if len(cal_down) else float(cal["target_log_return"].mean())
+        expected_log = prob_up * mean_up + (1 - prob_up) * mean_down
+        actual_log = float(test["target_log_return"].iloc[0])
+        row = {
+            "date": window.test_date,
+            "model": model_name,
+            "horizon": window.horizon,
+            "window_type": window.window_type,
+            "is_official": window.is_official,
+            "probability_up": prob_up,
+            "probability_confidence": prob_conf,
+            "expected_log_return": expected_log,
+            "actual_log_return": actual_log,
+            "actual_return": math.exp(actual_log) - 1,
+            "actual_up": int(actual_log > 0),
+            "threshold": threshold,
+            "threshold_source": "nested_calibration",
+            "predicted_up": int(prob_up >= threshold),
+            "position": float(prob_up >= threshold),
+            "train_rows": int(len(fit_train)),
+            "calibration_rows": int(len(cal)),
+            "feature_count": int(len(usable_cols)),
+        }
+        policy_input = pd.DataFrame([row]).set_index("date")
+        policy_row = _add_signal_policy_columns(policy_input, cal_eval, config).iloc[0].to_dict()
+        row.update({key: policy_row[key] for key in policy_row if key not in row or key.startswith(("policy_", "risk_", "high_"))})
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("date").sort_index() if rows else pd.DataFrame()
+
+
+def asset_specific_candidate_names(asset_id: str) -> List[str]:
+    if asset_id == "btc":
+        return [
+            "all_features",
+            "btc_dollar_rates_cycle",
+            "core_price_macro_risk",
+            "price_plus_dollar_rates",
+            "price_plus_stablecoins",
+            "btc_derivatives_pack",
+            "btc_dollar_rates_cycle_plus_derivatives_pack",
+        ]
+    if asset_id == "sol":
+        return [
+            "all_features",
+            "sol_rates_risk_price",
+            "price_plus_risk_assets",
+            "price_plus_macro",
+            "sol_dollar_rates_only",
+            "price_momentum_only",
+        ]
+    return ["all_features", "core_price_macro_risk", "price_momentum_only"]
+
+
+def asset_specific_candidate_models(asset_id: str, candidate_name: str, base_reference_model: str) -> List[str]:
+    if candidate_name == "all_features":
+        return [base_reference_model] if base_reference_model else ["logistic_linear"]
+    if asset_id == "btc":
+        return ["logistic_linear"]
+    if asset_id == "sol":
+        if candidate_name in {"sol_dollar_rates_only", "price_momentum_only"}:
+            return ["random_forest"]
+        return ["logistic_linear"]
+    return ["logistic_linear"]
+
+
+def _material_worsening(candidate: dict, reference: dict) -> bool:
+    if not reference:
+        return False
+    brier_bad = (
+        pd.notna(candidate.get("brier_score"))
+        and pd.notna(reference.get("brier_score"))
+        and float(candidate["brier_score"]) > float(reference["brier_score"]) + MATERIAL_BRIER_WORSENING
+    )
+    calibration_bad = (
+        pd.notna(candidate.get("calibration_error"))
+        and pd.notna(reference.get("calibration_error"))
+        and float(candidate["calibration_error"]) > float(reference["calibration_error"]) + MATERIAL_CALIBRATION_WORSENING
+    )
+    drawdown_bad = (
+        pd.notna(candidate.get("max_drawdown"))
+        and pd.notna(reference.get("max_drawdown"))
+        and float(candidate["max_drawdown"]) < float(reference["max_drawdown"]) - MATERIAL_DRAWDOWN_WORSENING
+    )
+    return bool(brier_bad or calibration_bad or drawdown_bad)
+
+
+def _regime_stability_pass(raw: pd.DataFrame, preds: pd.DataFrame) -> bool:
+    if preds.empty:
+        return False
+    passes = 0
+    failures = 0
+    masks = _period_slice_masks(raw, pd.DatetimeIndex(preds.index))
+    for mask in masks.values():
+        part = preds.loc[mask.to_numpy()]
+        if len(part) < 8:
+            continue
+        accuracy = float((part["predicted_up"].astype(int) == part["actual_up"].astype(int)).mean())
+        net_return = float((1 + _policy_returns_for_predictions(part, 0.0)["position"].astype(float) * part["actual_return"].astype(float)).prod() - 1)
+        if accuracy >= 0.55 and net_return > 0:
+            passes += 1
+        if accuracy < 0.50:
+            failures += 1
+    return bool(passes >= 2 and failures == 0)
+
+
+def _asset_feature_rejection_reason(
+    *,
+    promotion_eligible: bool,
+    selection_eligible: bool,
+    beats_current_reference: bool,
+    material_worsening: bool,
+    regime_stability_pass: bool,
+    ci_low: float,
+    p_value: float,
+    n_samples: int,
+) -> str:
+    if promotion_eligible:
+        return "promotion_eligible"
+    reasons = []
+    if n_samples < MIN_SAMPLE_THRESHOLDS["30d_official"]:
+        reasons.append("below_sample_threshold")
+    if not selection_eligible:
+        reasons.append("failed_official_model_selection_gates")
+    if not beats_current_reference:
+        reasons.append("did_not_improve_current_all_features_reference")
+    if material_worsening:
+        reasons.append("materially_worsened_brier_calibration_or_drawdown")
+    if not (pd.notna(ci_low) and float(ci_low) > 0.50 and pd.notna(p_value) and float(p_value) <= 0.10):
+        reasons.append("failed_bootstrap_or_permutation_stability_check")
+    if not regime_stability_pass:
+        reasons.append("failed_regime_stability_check")
+    return "; ".join(reasons) if reasons else "not_promoted"
+
+
+def _bootstrap_active_hit_rate(preds: pd.DataFrame, config: ResearchConfig, *, quick: bool) -> Tuple[float, float, float]:
+    if preds.empty or "policy_position" not in preds:
+        return np.nan, np.nan, np.nan
+    active_mask = preds["policy_position"].astype(float).to_numpy() > 0
+    if active_mask.sum() == 0:
+        return np.nan, np.nan, np.nan
+    actual = preds["actual_up"].astype(int).to_numpy()
+    observed = float(actual[active_mask].mean())
+    iterations = config.quick_bootstrap_iterations if quick else min(config.bootstrap_iterations, 250)
+    perm_iterations = config.quick_permutation_iterations if quick else min(config.permutation_iterations, 250)
+    rng = np.random.default_rng(config.random_seed + len(preds) + int(active_mask.sum()))
+    active_actual = actual[active_mask]
+    boot = []
+    for _ in range(iterations):
+        idx = rng.integers(0, len(active_actual), len(active_actual))
+        boot.append(float(active_actual[idx].mean()))
+    perm_hits = 0
+    for _ in range(perm_iterations):
+        if float(rng.permutation(actual)[active_mask].mean()) >= observed:
+            perm_hits += 1
+    return float(np.percentile(boot, 2.5)), float(np.percentile(boot, 97.5)), float((perm_hits + 1) / (perm_iterations + 1))
+
+
+def signal_policy_report_row(
+    run_id: str,
+    asset_id: str,
+    horizon: int,
+    window_type: str,
+    candidate_name: str,
+    model_name: str,
+    preds: pd.DataFrame,
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> dict:
+    if preds.empty:
+        return {
+            "run_id": run_id,
+            "asset_id": asset_id,
+            "horizon": horizon,
+            "window_type": window_type,
+            "candidate_feature_set": candidate_name,
+            "model_name": model_name,
+            "n_samples": 0,
+            "policy_source": "train_calibration_only",
+            "long_threshold_median": np.nan,
+            "expected_return_min_median": np.nan,
+            "threshold_050_used": False,
+            "threshold_050_diagnostic_only": True,
+            "active_signal_count": 0,
+            "active_coverage": 0.0,
+            "abstention_rate": 1.0,
+            "active_hit_rate": np.nan,
+            "missed_up_month_rate": np.nan,
+            "after_cost_return": np.nan,
+            "max_drawdown": np.nan,
+            "bootstrap_ci_low": np.nan,
+            "bootstrap_ci_high": np.nan,
+            "permutation_p_value": np.nan,
+            "risk_off_count": 0,
+            "risk_off_rate": 0.0,
+            "risk_off_hit_rate": np.nan,
+            "risk_off_avg_return": np.nan,
+            "risk_off_probability_threshold_median": np.nan,
+            "valid_signal_policy": False,
+            "high_confidence_policy_eligible": False,
+            "promoted_signal_policy": False,
+            "rejection_reason": "empty_predictions",
+        }
+    frame = _policy_returns_for_predictions(preds, config.transaction_cost_bps)
+    active = frame[frame["policy_position"].astype(float) > 0]
+    actual_up = frame["actual_up"].astype(int)
+    risk_mask = frame["risk_off_flag"].astype(bool) if "risk_off_flag" in frame else pd.Series(False, index=frame.index)
+    risk_off = frame[risk_mask]
+    ci_low, ci_high, p_value = _bootstrap_active_hit_rate(frame, config, quick=quick)
+    long_threshold = float(frame["policy_long_threshold"].median()) if "policy_long_threshold" in frame else np.nan
+    expected_min = float(frame["policy_expected_return_min"].median()) if "policy_expected_return_min" in frame else np.nan
+    active_count = int(len(active))
+    active_coverage = float(active_count / len(frame)) if len(frame) else 0.0
+    after_cost_return = float(frame["policy_equity"].iloc[-1] - 1) if len(frame) else np.nan
+    risk_off_count = int(len(risk_off))
+    missed_up = frame[(frame["actual_up"].astype(int) == 1) & (frame["policy_position"].astype(float) <= 0)]
+    valid = bool(
+        active_count >= active_signal_floor(len(frame))
+        and active_coverage >= VALID_ACTIVE_MIN_RATIO
+        and pd.notna(after_cost_return)
+        and after_cost_return > 0
+        and pd.notna(long_threshold)
+        and is_official_long_policy_allowed(long_threshold, expected_min if pd.notna(expected_min) else 0.0)
+    )
+    high_eligible = bool(valid and active_count >= high_confidence_signal_floor(len(frame)))
+    active_hit = float(active["actual_up"].astype(int).mean()) if not active.empty else np.nan
+    promoted = bool(valid and pd.notna(active_hit) and active_hit > 0.50 and pd.notna(ci_low) and ci_low > 0.50 and pd.notna(p_value) and p_value <= 0.10)
+    reasons = []
+    if pd.notna(long_threshold) and not is_official_long_policy_allowed(long_threshold, expected_min if pd.notna(expected_min) else 0.0):
+        reasons.append("threshold_0_50_is_diagnostic_only")
+    if active_count < active_signal_floor(len(frame)):
+        reasons.append("below_active_signal_floor")
+    if active_coverage < VALID_ACTIVE_MIN_RATIO:
+        reasons.append("below_active_coverage_floor")
+    if not (pd.notna(after_cost_return) and after_cost_return > 0):
+        reasons.append("no_positive_after_cost_return")
+    if not (pd.notna(active_hit) and active_hit > 0.50):
+        reasons.append("weak_active_hit_rate")
+    if not (pd.notna(ci_low) and ci_low > 0.50 and pd.notna(p_value) and p_value <= 0.10):
+        reasons.append("failed_bootstrap_or_permutation_check")
+    return {
+        "run_id": run_id,
+        "asset_id": asset_id,
+        "horizon": horizon,
+        "window_type": window_type,
+        "candidate_feature_set": candidate_name,
+        "model_name": model_name,
+        "n_samples": int(len(frame)),
+        "policy_source": "train_calibration_only",
+        "long_threshold_median": long_threshold,
+        "expected_return_min_median": expected_min,
+        "threshold_050_used": bool(pd.notna(long_threshold) and long_threshold <= 0.50),
+        "threshold_050_diagnostic_only": True,
+        "active_signal_count": active_count,
+        "active_coverage": active_coverage,
+        "abstention_rate": float(1 - active_coverage),
+        "active_hit_rate": active_hit,
+        "missed_up_month_rate": float(len(missed_up) / int(actual_up.sum())) if int(actual_up.sum()) else np.nan,
+        "after_cost_return": after_cost_return,
+        "max_drawdown": float((frame["policy_equity"] / frame["policy_equity"].cummax() - 1).min()) if len(frame) else np.nan,
+        "bootstrap_ci_low": ci_low,
+        "bootstrap_ci_high": ci_high,
+        "permutation_p_value": p_value,
+        "risk_off_count": risk_off_count,
+        "risk_off_rate": float(risk_off_count / len(frame)) if len(frame) else 0.0,
+        "risk_off_hit_rate": float((risk_off["actual_return"].astype(float) < 0).mean()) if not risk_off.empty else np.nan,
+        "risk_off_avg_return": float(risk_off["actual_return"].astype(float).mean()) if not risk_off.empty else np.nan,
+        "risk_off_probability_threshold_median": float(frame["risk_off_probability_threshold"].dropna().median()) if "risk_off_probability_threshold" in frame and frame["risk_off_probability_threshold"].notna().any() else np.nan,
+        "valid_signal_policy": valid,
+        "high_confidence_policy_eligible": high_eligible,
+        "promoted_signal_policy": promoted,
+        "rejection_reason": "promotion_eligible" if promoted else "; ".join(dict.fromkeys(reasons)),
+    }
+
+
+def _candidate_predictions_and_summaries(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    candidate_name: str,
+    candidate_cols: Sequence[str],
+    config: ResearchConfig,
+    *,
+    quick: bool,
+    model_names_override: Optional[Sequence[str]] = None,
+) -> Tuple[Dict[str, pd.DataFrame], Dict[str, dict], str, Dict[str, List[int]]]:
+    from research_pipeline import BASELINE_MODELS, build_target_frame, build_walk_forward_windows, compute_metrics, decorate_summary, predict_baseline_windows
+
+    if len(candidate_cols) < 5:
+        return {}, {}, "", {}
+    horizon = 30
+    window_type = "official_monthly"
+    target_frame = build_target_frame(raw, feature_result.features, candidate_cols, horizon)
+    windows = build_walk_forward_windows(target_frame, horizon, window_type, config, quick=quick)
+    if quick and len(windows) > 12:
+        windows = windows[-12:]
+    if not windows:
+        return {}, {}, "", {}
+    predictions_by_model: Dict[str, pd.DataFrame] = {}
+    selected_counts_by_model: Dict[str, List[int]] = {}
+    for baseline in config.baseline_models:
+        preds = predict_baseline_windows(baseline, target_frame, windows, config)
+        if not preds.empty:
+            predictions_by_model[baseline] = preds
+            selected_counts_by_model[baseline] = [0]
+    model_names = list(model_names_override or (config.first_model_set if (not quick or candidate_name == "all_features") else ["logistic_linear"]))
+    for model_name in model_names:
+        if candidate_name == "all_features":
+            preds = _predict_direct_model_windows_with_policy(model_name, target_frame, candidate_cols, windows, config, quick=quick)
+            selected_counts = [len(candidate_cols)]
+        else:
+            preds, selected_counts = _predict_model_windows_nested_pruned(model_name, target_frame, candidate_cols, windows, config, quick=quick)
+        if not preds.empty:
+            predictions_by_model[model_name] = preds
+            selected_counts_by_model[model_name] = selected_counts
+    if not predictions_by_model:
+        return {}, {}, "", {}
+    common_dates = None
+    for preds in predictions_by_model.values():
+        common_dates = preds.index if common_dates is None else common_dates.intersection(preds.index)
+    if common_dates is None or len(common_dates) == 0:
+        return {}, {}, "", {}
+    predictions_by_model = {model: preds.loc[common_dates].sort_index() for model, preds in predictions_by_model.items()}
+    summaries: Dict[str, dict] = {}
+    for model, preds in predictions_by_model.items():
+        metrics, _ = compute_metrics(preds, horizon, window_type, config.transaction_cost_bps)
+        metrics.update(
+            {
+                "run_id": run_id,
+                "horizon": horizon,
+                "window_type": window_type,
+                "is_official": True,
+                "model": model,
+                "threshold": float(preds["threshold"].mean()),
+                "threshold_source": "baseline_rule" if model in BASELINE_MODELS else "nested_calibration" if candidate_name == "all_features" else "nested_feature_selection_and_calibration",
+            }
+        )
+        summaries[model] = metrics
+    baseline_summaries = {name: summaries[name] for name in BASELINE_MODELS if name in summaries}
+    decorated = {model: decorate_summary(summary, baseline_summaries, horizon, True, model) for model, summary in summaries.items()}
+    return predictions_by_model, decorated, _sample_fingerprint(common_dates), selected_counts_by_model
+
+
+def asset_feature_set_and_policy_diagnostics(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+    base_leaderboard: pd.DataFrame,
+    *,
+    quick: bool,
+) -> Dict[str, pd.DataFrame]:
+    from research_pipeline import BASELINE_MODELS
+
+    asset_id = _asset_id_from_run(run_id)
+    candidate_sets = candidate_feature_sets(feature_result.feature_cols, asset_id)
+    requested = asset_specific_candidate_names(asset_id)
+    base_30 = base_leaderboard[(base_leaderboard["horizon"] == 30) & (base_leaderboard["window_type"] == "official_monthly")].copy()
+    base_ml = base_30[~base_30["model"].isin(BASELINE_MODELS)].copy()
+    best_base = (
+        base_ml.sort_values(
+            ["directional_accuracy", "brier_score", "sharpe", "max_drawdown", "calibration_error"],
+            ascending=[False, True, False, False, True],
+            na_position="last",
+        )
+        .head(1)
+        .to_dict("records")
+    )
+    default_reference = best_base[0] if best_base else {}
+    base_reference_model = str(default_reference.get("model", "logistic_linear")) if default_reference else "logistic_linear"
+    asset_rows = []
+    policy_rows = []
+    for candidate_name in requested:
+        candidate_cols = candidate_sets.get(candidate_name, [])
+        model_names = asset_specific_candidate_models(asset_id, candidate_name, base_reference_model)
+        if len(candidate_cols) < 5:
+            for model_name in model_names:
+                asset_rows.append(
+                    {
+                        "run_id": run_id,
+                        "asset_id": asset_id,
+                        "horizon": 30,
+                        "window_type": "official_monthly",
+                        "candidate_feature_set": candidate_name,
+                        "model_name": model_name,
+                        "feature_selection_method": "nested_train_only_pruned" if candidate_name != "all_features" else "all_features_reference",
+                        "n_features": len(candidate_cols),
+                        "n_samples": 0,
+                        "directional_accuracy": np.nan,
+                        "balanced_accuracy": np.nan,
+                        "brier_score": np.nan,
+                        "calibration_error": np.nan,
+                        "sharpe": np.nan,
+                        "max_drawdown": np.nan,
+                        "net_return": np.nan,
+                        "beats_buy_hold": False,
+                        "beats_momentum_30d": False,
+                        "beats_momentum_90d": False,
+                        "beats_random_baseline": False,
+                        "beats_current_reference": False,
+                        "material_worsening": False,
+                        "regime_stability_pass": False,
+                        "bootstrap_ci_low": np.nan,
+                        "bootstrap_ci_high": np.nan,
+                        "permutation_p_value": np.nan,
+                        "promotion_eligible": False,
+                        "reliability_label": "Low confidence",
+                        "window_fingerprint": "",
+                        "rejection_reason": "no_candidate_features_or_below_minimum_feature_count",
+                    }
+                )
+                policy_rows.append(
+                    signal_policy_report_row(run_id, asset_id, 30, "official_monthly", candidate_name, model_name, pd.DataFrame(), config, quick=quick)
+                )
+            continue
+        if candidate_name == "all_features":
+            for _, base_row in base_ml.iterrows():
+                model_name = str(base_row["model"])
+                ci_low, ci_high, p_value = np.nan, np.nan, np.nan
+                asset_rows.append(
+                    {
+                        "run_id": run_id,
+                        "asset_id": asset_id,
+                        "horizon": 30,
+                        "window_type": "official_monthly",
+                        "candidate_feature_set": candidate_name,
+                        "model_name": model_name,
+                        "feature_selection_method": "all_features_reference",
+                        "n_features": len(candidate_cols),
+                        "n_samples": int(base_row.get("sample_count", 0)),
+                        "directional_accuracy": base_row.get("directional_accuracy", np.nan),
+                        "balanced_accuracy": base_row.get("balanced_accuracy", np.nan),
+                        "brier_score": base_row.get("brier_score", np.nan),
+                        "calibration_error": base_row.get("calibration_error", np.nan),
+                        "sharpe": base_row.get("sharpe", np.nan),
+                        "max_drawdown": base_row.get("max_drawdown", np.nan),
+                        "net_return": base_row.get("tc_adjusted_return", np.nan),
+                        "beats_buy_hold": bool(base_row.get("beats_buy_hold_direction", False)),
+                        "beats_momentum_30d": bool(base_row.get("beats_momentum_30d", False)),
+                        "beats_momentum_90d": bool(base_row.get("beats_momentum_90d", False)),
+                        "beats_random_baseline": bool(base_row.get("beats_random_baseline", False)),
+                        "beats_current_reference": False,
+                        "material_worsening": False,
+                        "regime_stability_pass": False,
+                        "bootstrap_ci_low": ci_low,
+                        "bootstrap_ci_high": ci_high,
+                        "permutation_p_value": p_value,
+                        "promotion_eligible": False,
+                        "reliability_label": base_row.get("reliability_label", "Low confidence"),
+                        "window_fingerprint": "",
+                        "rejection_reason": "current_all_features_reference",
+                    }
+                )
+        predictions, summaries, fingerprint, selected_counts = _candidate_predictions_and_summaries(
+            run_id,
+            raw,
+            feature_result,
+            candidate_name,
+            candidate_cols,
+            config,
+            quick=quick,
+            model_names_override=model_names,
+        )
+        for model_name in model_names:
+            summary = summaries.get(model_name)
+            preds = predictions.get(model_name, pd.DataFrame())
+            policy_rows.append(
+                signal_policy_report_row(run_id, asset_id, 30, "official_monthly", candidate_name, model_name, preds, config, quick=quick)
+            )
+            if candidate_name == "all_features":
+                continue
+            if summary is None:
+                asset_rows.append(
+                    {
+                        "run_id": run_id,
+                        "asset_id": asset_id,
+                        "horizon": 30,
+                        "window_type": "official_monthly",
+                        "candidate_feature_set": candidate_name,
+                        "model_name": model_name,
+                        "feature_selection_method": "nested_train_only_pruned" if candidate_name != "all_features" else "all_features_reference",
+                        "n_features": len(candidate_cols),
+                        "n_samples": 0,
+                        "directional_accuracy": np.nan,
+                        "balanced_accuracy": np.nan,
+                        "brier_score": np.nan,
+                        "calibration_error": np.nan,
+                        "sharpe": np.nan,
+                        "max_drawdown": np.nan,
+                        "net_return": np.nan,
+                        "beats_buy_hold": False,
+                        "beats_momentum_30d": False,
+                        "beats_momentum_90d": False,
+                        "beats_random_baseline": False,
+                        "beats_current_reference": False,
+                        "material_worsening": False,
+                        "regime_stability_pass": False,
+                        "bootstrap_ci_low": np.nan,
+                        "bootstrap_ci_high": np.nan,
+                        "permutation_p_value": np.nan,
+                        "promotion_eligible": False,
+                        "reliability_label": "Low confidence",
+                        "window_fingerprint": fingerprint,
+                        "rejection_reason": "model_did_not_produce_predictions",
+                    }
+                )
+                continue
+            reference = default_reference
+            beats_current = bool(
+                reference
+                and pd.notna(summary.get("directional_accuracy"))
+                and float(summary.get("directional_accuracy")) > float(reference.get("directional_accuracy", np.inf))
+                and float(summary.get("tc_adjusted_return", -np.inf)) >= float(reference.get("tc_adjusted_return", -np.inf))
+            )
+            material_bad = _material_worsening(summary, reference)
+            ci_low, ci_high, p_value = _bootstrap_signal_quality(preds, config, quick=quick)
+            regime_ok = _regime_stability_pass(raw, preds)
+            promotion_eligible = bool(
+                candidate_name != "all_features"
+                and summary.get("selection_eligible", False)
+                and summary.get("sample_count", 0) >= MIN_SAMPLE_THRESHOLDS["30d_official"]
+                and beats_current
+                and not material_bad
+                and pd.notna(ci_low)
+                and ci_low > 0.50
+                and pd.notna(p_value)
+                and p_value <= 0.10
+                and regime_ok
+            )
+            asset_rows.append(
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "horizon": 30,
+                    "window_type": "official_monthly",
+                    "candidate_feature_set": candidate_name,
+                    "model_name": model_name,
+                    "feature_selection_method": "nested_train_only_pruned" if candidate_name != "all_features" else "all_features_reference",
+                    "n_features": int(np.nanmedian(selected_counts.get(model_name, [len(candidate_cols)]))) if model_name in selected_counts else len(candidate_cols),
+                    "n_samples": int(summary.get("sample_count", 0)),
+                    "directional_accuracy": summary.get("directional_accuracy", np.nan),
+                    "balanced_accuracy": summary.get("balanced_accuracy", np.nan),
+                    "brier_score": summary.get("brier_score", np.nan),
+                    "calibration_error": summary.get("calibration_error", np.nan),
+                    "sharpe": summary.get("sharpe", np.nan),
+                    "max_drawdown": summary.get("max_drawdown", np.nan),
+                    "net_return": summary.get("tc_adjusted_return", np.nan),
+                    "beats_buy_hold": bool(summary.get("beats_buy_hold_direction", False)),
+                    "beats_momentum_30d": bool(summary.get("beats_momentum_30d", False)),
+                    "beats_momentum_90d": bool(summary.get("beats_momentum_90d", False)),
+                    "beats_random_baseline": bool(summary.get("beats_random_baseline", False)),
+                    "beats_current_reference": beats_current,
+                    "material_worsening": material_bad,
+                    "regime_stability_pass": regime_ok,
+                    "bootstrap_ci_low": ci_low,
+                    "bootstrap_ci_high": ci_high,
+                    "permutation_p_value": p_value,
+                    "promotion_eligible": promotion_eligible,
+                    "reliability_label": summary.get("reliability_label", "Low confidence"),
+                    "window_fingerprint": fingerprint,
+                    "rejection_reason": _asset_feature_rejection_reason(
+                        promotion_eligible=promotion_eligible,
+                        selection_eligible=bool(summary.get("selection_eligible", False)),
+                        beats_current_reference=beats_current,
+                        material_worsening=material_bad,
+                        regime_stability_pass=regime_ok,
+                        ci_low=ci_low,
+                        p_value=p_value,
+                        n_samples=int(summary.get("sample_count", 0)),
+                    ),
+                }
+            )
+    asset_frame = pd.DataFrame(asset_rows)
+    if asset_id == "btc" and not asset_frame.empty:
+        non_derivative = asset_frame[
+            (~asset_frame["candidate_feature_set"].astype(str).str.contains("derivatives_pack", na=False))
+            & (asset_frame["candidate_feature_set"] != "all_features")
+        ]
+        derivative_pack = asset_frame[asset_frame["candidate_feature_set"] == "btc_derivatives_pack"]
+        best_non_derivative = float(non_derivative["directional_accuracy"].max()) if not non_derivative.empty else np.nan
+        best_derivative_pack = float(derivative_pack["directional_accuracy"].max()) if not derivative_pack.empty else np.nan
+        derivative_pack_improved = bool(
+            pd.notna(best_derivative_pack)
+            and pd.notna(best_non_derivative)
+            and best_derivative_pack > best_non_derivative
+        )
+        if not derivative_pack_improved:
+            mask = asset_frame["candidate_feature_set"] == "btc_dollar_rates_cycle_plus_derivatives_pack"
+            promoted_mask = mask & (asset_frame["promotion_eligible"] == True)
+            asset_frame.loc[promoted_mask, "promotion_eligible"] = False
+            asset_frame.loc[mask, "rejection_reason"] = asset_frame.loc[mask, "rejection_reason"].apply(
+                lambda reason: (
+                    f"{reason}; derivative_pack_did_not_improve_beyond_best_non_derivatives_candidate"
+                    if reason and reason != "promotion_eligible"
+                    else "derivative_pack_did_not_improve_beyond_best_non_derivatives_candidate"
+                )
+            )
+    return {
+        "asset_feature_set_leaderboard.csv": asset_frame,
+        "signal_policy_report.csv": pd.DataFrame(policy_rows),
+    }
+
+
+def latest_signal_interpretation_frame(
+    run_id: str,
+    generated_at: str,
+    latest: pd.DataFrame,
+    signal_policy: pd.DataFrame,
+    asset_feature_sets: pd.DataFrame,
+) -> pd.DataFrame:
+    if latest.empty:
+        return empty_output_frame("latest_signal_interpretation.csv")
+    asset_id = _asset_id_from_run(run_id)
+    primary = latest[latest["is_primary_objective"] == True].head(1)
+    row = primary.iloc[0] if not primary.empty else latest.iloc[0]
+    selected_model = str(row.get("selected_model", "no_valid_edge"))
+    promoted_features = asset_feature_sets[asset_feature_sets["promotion_eligible"] == True] if not asset_feature_sets.empty else pd.DataFrame()
+    selected_feature_set = "all_features"
+    asset_feature_promoted = False
+    if not promoted_features.empty and selected_model != "no_valid_edge":
+        promoted_features = promoted_features.sort_values(
+            ["directional_accuracy", "brier_score", "sharpe", "max_drawdown", "calibration_error"],
+            ascending=[False, True, False, False, True],
+            na_position="last",
+        )
+        selected_feature_set = str(promoted_features.iloc[0]["candidate_feature_set"])
+        asset_feature_promoted = True
+    matching_policy = pd.DataFrame()
+    if not signal_policy.empty and selected_model != "no_valid_edge":
+        matching_policy = signal_policy[
+            (signal_policy["candidate_feature_set"] == selected_feature_set)
+            & (signal_policy["model_name"] == selected_model)
+        ].head(1)
+        if matching_policy.empty:
+            matching_policy = signal_policy[
+                (signal_policy["candidate_feature_set"] == "all_features")
+                & (signal_policy["model_name"] == selected_model)
+            ].head(1)
+    policy_row = matching_policy.iloc[0] if not matching_policy.empty else pd.Series(dtype=object)
+    probability_up = float(row.get("predicted_probability_up", 0.5))
+    expected_return = float(row.get("expected_return", 0.0))
+    long_threshold = policy_row.get("long_threshold_median", np.nan)
+    expected_min = policy_row.get("expected_return_min_median", np.nan)
+    risk_threshold = policy_row.get("risk_off_probability_threshold_median", np.nan)
+    risk_bucket_count = int(policy_row.get("risk_off_count", 0) or 0) if not policy_row.empty else 0
+    risk_bucket_avg = policy_row.get("risk_off_avg_return", np.nan)
+    signal_policy_promoted = bool(policy_row.get("promoted_signal_policy", False)) if not policy_row.empty else False
+
+    if selected_model == "no_valid_edge":
+        selected_feature_set = "none"
+        strategy_action = "cash"
+        risk_label = "Neutral / no edge"
+        reason = "No valid 30d edge; signal policy cannot override no_valid_edge."
+    else:
+        long_allowed = bool(
+            signal_policy_promoted
+            and pd.notna(long_threshold)
+            and is_official_long_policy_allowed(float(long_threshold), float(expected_min) if pd.notna(expected_min) else 0.0)
+            and probability_up >= float(long_threshold)
+            and (pd.isna(expected_min) or expected_return >= float(expected_min))
+            and str(row.get("reliability_label")) != "Low confidence"
+        )
+        high_downside = bool(
+            pd.notna(risk_threshold)
+            and risk_bucket_count >= 8
+            and probability_up <= 0.35
+            and expected_return < -0.10
+        )
+        risk_off = bool(pd.notna(risk_threshold) and risk_bucket_count >= 8 and probability_up <= float(risk_threshold))
+        if long_allowed:
+            strategy_action = "long"
+            risk_label = "Long signal"
+            reason = "Train-only signal policy is promoted and current probability clears the official long threshold."
+        elif high_downside:
+            strategy_action = "cash"
+            risk_label = "High downside risk"
+            reason = "Current probability and expected return fall inside a supported train-derived downside bucket."
+        elif risk_off:
+            strategy_action = "cash"
+            risk_label = "Risk-off / avoid long"
+            reason = "Current probability falls inside a train-derived weak-probability bucket; this is not a short signal."
+        else:
+            strategy_action = "cash"
+            risk_label = "Neutral / no edge"
+            reason = "Current forecast does not clear the promoted long policy or supported downside-risk bucket."
+    return pd.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "generated_at": generated_at,
+                "as_of_date": row.get("as_of_date", ""),
+                "asset_id": asset_id,
+                "horizon": row.get("horizon", 30),
+                "selected_model": selected_model,
+                "selected_feature_set": selected_feature_set,
+                "strategy_action": strategy_action,
+                "risk_label": risk_label,
+                "probability_up": probability_up,
+                "expected_return": expected_return,
+                "long_threshold": long_threshold,
+                "expected_return_threshold": expected_min,
+                "risk_off_threshold": risk_threshold,
+                "active_signal_count": int(policy_row.get("active_signal_count", 0) or 0) if not policy_row.empty else 0,
+                "active_coverage": policy_row.get("active_coverage", np.nan) if not policy_row.empty else np.nan,
+                "risk_off_bucket_count": risk_bucket_count,
+                "risk_off_bucket_avg_return": risk_bucket_avg,
+                "signal_policy_promoted": signal_policy_promoted,
+                "asset_feature_set_promoted": asset_feature_promoted,
+                "reliability_label": row.get("reliability_label", "Low confidence"),
+                "reason": reason,
+            }
+        ]
+    )
 
 
 def sol_stability_report(
@@ -2237,6 +3215,23 @@ def write_diagnostics(
         base_outputs.get("confidence_intervals.csv"),
         quick=quick,
     )
+    asset_policy = asset_feature_set_and_policy_diagnostics(
+        run_id,
+        raw,
+        feature_result,
+        config,
+        base_outputs["model_leaderboard.csv"],
+        quick=quick,
+    )
+    generated_at = str(latest["generated_at"].iloc[0]) if "generated_at" in latest and not latest.empty else ""
+    latest_interpretation = latest_signal_interpretation_frame(
+        run_id,
+        generated_at,
+        latest,
+        asset_policy["signal_policy_report.csv"],
+        asset_policy["asset_feature_set_leaderboard.csv"],
+    )
+    write_schema_csv("latest_signal_interpretation.csv", latest_interpretation, output_dir)
     diagnostics = {
         "model_rejection_reasons.csv": model_rejection_reasons(base_outputs["backtest_summary.csv"], selected_model),
         "feature_signal_diagnostics.csv": feature_signal_diagnostics(run_id, raw, feature_result, config),
@@ -2254,10 +3249,13 @@ def write_diagnostics(
         "polymarket_feature_diagnostics.csv": polymarket_feature_diagnostics(run_id, raw, feature_result, config),
         "polymarket_impact.csv": polymarket_impact(run_id, raw, feature_result, config, quick=quick),
         **pruning,
+        **asset_policy,
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)
     write_full_refresh_diagnostics_report(output_dir, baseline_dir)
     write_derivatives_recovery_report(output_dir)
     write_feature_pruning_summary(output_dir)
-    return diagnostics
+    returned = dict(diagnostics)
+    returned["latest_signal_interpretation.csv"] = latest_interpretation
+    return returned

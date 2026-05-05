@@ -67,6 +67,7 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "confidence": pd.read_csv(output_dir / "confidence_intervals.csv"),
         "regimes": pd.read_csv(output_dir / "regime_slices.csv"),
         "latest": pd.read_csv(output_dir / "latest_forecast.csv"),
+        "latest_signal_interpretation": pd.read_csv(output_dir / "latest_signal_interpretation.csv"),
         "availability": pd.read_csv(output_dir / "data_availability.csv"),
         "features": pd.read_csv(output_dir / "feature_audit.csv"),
         "rejections": read_diagnostic("model_rejection_reasons.csv"),
@@ -84,6 +85,8 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "pruned_leaderboard": read_diagnostic("pruned_feature_leaderboard.csv"),
         "feature_pruning_report": read_diagnostic("feature_pruning_report.csv"),
         "sol_stability_report": read_diagnostic("sol_stability_report.csv"),
+        "signal_policy_report": read_diagnostic("signal_policy_report.csv"),
+        "asset_feature_set_leaderboard": read_diagnostic("asset_feature_set_leaderboard.csv"),
     }
     data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     data["diagnostic_warnings"] = diagnostic_warnings
@@ -179,6 +182,7 @@ except RuntimeError as exc:
 leaderboard = outputs["leaderboard"]
 summary = outputs["backtest_summary"]
 latest = outputs["latest"]
+latest_signal_interpretation = outputs["latest_signal_interpretation"]
 equity = outputs["equity_curves"]
 calibration = outputs["calibration"]
 confidence = outputs["confidence"]
@@ -200,11 +204,15 @@ signal_quality = outputs["signal_quality"]
 pruned_leaderboard = outputs["pruned_leaderboard"]
 feature_pruning_report = outputs["feature_pruning_report"]
 sol_stability_report = outputs["sol_stability_report"]
+signal_policy_report = outputs["signal_policy_report"]
+asset_feature_set_leaderboard = outputs["asset_feature_set_leaderboard"]
 manifest = outputs["manifest"]
 asset_name = str(manifest.get("asset_name") or asset_config.display_name)
 
 primary = latest.loc[latest["is_primary_objective"] == True].head(1)
 primary_row = primary.iloc[0] if not primary.empty else latest.iloc[0]
+signal_interp_primary = latest_signal_interpretation.head(1)
+signal_interp_row = signal_interp_primary.iloc[0] if not signal_interp_primary.empty else pd.Series(dtype=object)
 
 st.title(f"{asset_name} Research Validity Report")
 st.markdown(
@@ -224,6 +232,13 @@ forecast_cols[0].metric(f"{asset_name} spot", fmt_usd(primary_row["current_price
 forecast_cols[1].metric("Probability up", fmt_pct(primary_row["predicted_probability_up"]))
 forecast_cols[2].metric("Expected return", fmt_pct(primary_row["expected_return"]))
 forecast_cols[3].metric("Model-implied forecast price", fmt_usd(primary_row["model_implied_forecast_price"]))
+
+policy_cols = st.columns(4)
+policy_cols[0].metric("Strategy action", str(signal_interp_row.get("strategy_action", "cash")))
+policy_cols[1].metric("Risk label", str(signal_interp_row.get("risk_label", "Neutral / no edge")))
+policy_cols[2].metric("Signal policy promoted", str(bool(signal_interp_row.get("signal_policy_promoted", False))))
+policy_cols[3].metric("Feature set promoted", str(bool(signal_interp_row.get("asset_feature_set_promoted", False))))
+st.caption("Risk-off means avoid long exposure; it is not a short signal.")
 
 if manifest.get("warnings"):
     with st.expander("Research Warnings", expanded=True):
@@ -328,6 +343,110 @@ with signal_tab:
         c4.metric("Best pruned accuracy", fmt_pct(best_pruned.iloc[0]["directional_accuracy"]), str(best_pruned.iloc[0]["candidate_feature_set"]))
     else:
         c4.metric("Best pruned accuracy", "n/a")
+
+    st.subheader("Signal Policy")
+    st.caption("Threshold and abstention policies are selected inside each train/calibration split only. A 0.50 long threshold is diagnostic-only.")
+    policy_30 = signal_policy_report[
+        (signal_policy_report["horizon"] == 30)
+        & (signal_policy_report["window_type"] == "official_monthly")
+    ].copy()
+    if policy_30.empty:
+        st.warning("No precomputed signal policy report is available.")
+    else:
+        st.dataframe(
+            policy_30.sort_values(
+                ["promoted_signal_policy", "active_hit_rate", "after_cost_return"],
+                ascending=[False, False, False],
+                na_position="last",
+            )[
+                [
+                    "candidate_feature_set",
+                    "model_name",
+                    "n_samples",
+                    "long_threshold_median",
+                    "expected_return_min_median",
+                    "active_signal_count",
+                    "active_coverage",
+                    "abstention_rate",
+                    "active_hit_rate",
+                    "missed_up_month_rate",
+                    "after_cost_return",
+                    "max_drawdown",
+                    "bootstrap_ci_low",
+                    "permutation_p_value",
+                    "risk_off_probability_threshold_median",
+                    "risk_off_count",
+                    "risk_off_hit_rate",
+                    "promoted_signal_policy",
+                    "rejection_reason",
+                ]
+            ].head(40).style.format(
+                {
+                    "long_threshold_median": "{:.2f}",
+                    "expected_return_min_median": "{:.1%}",
+                    "active_coverage": "{:.1%}",
+                    "abstention_rate": "{:.1%}",
+                    "active_hit_rate": "{:.1%}",
+                    "missed_up_month_rate": "{:.1%}",
+                    "after_cost_return": "{:.1%}",
+                    "max_drawdown": "{:.1%}",
+                    "bootstrap_ci_low": "{:.1%}",
+                    "permutation_p_value": "{:.3f}",
+                    "risk_off_probability_threshold_median": "{:.2f}",
+                    "risk_off_hit_rate": "{:.1%}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.subheader("Asset-Specific Feature Sets")
+    asset_sets_30 = asset_feature_set_leaderboard[
+        (asset_feature_set_leaderboard["horizon"] == 30)
+        & (asset_feature_set_leaderboard["window_type"] == "official_monthly")
+    ].copy()
+    if asset_sets_30.empty:
+        st.warning("No precomputed asset-specific feature-set leaderboard is available.")
+    else:
+        st.dataframe(
+            asset_sets_30.sort_values(
+                ["promotion_eligible", "directional_accuracy", "brier_score"],
+                ascending=[False, False, True],
+                na_position="last",
+            )[
+                [
+                    "candidate_feature_set",
+                    "model_name",
+                    "feature_selection_method",
+                    "n_features",
+                    "n_samples",
+                    "directional_accuracy",
+                    "brier_score",
+                    "calibration_error",
+                    "net_return",
+                    "max_drawdown",
+                    "beats_current_reference",
+                    "material_worsening",
+                    "regime_stability_pass",
+                    "bootstrap_ci_low",
+                    "permutation_p_value",
+                    "promotion_eligible",
+                    "rejection_reason",
+                ]
+            ].head(50).style.format(
+                {
+                    "directional_accuracy": "{:.1%}",
+                    "brier_score": "{:.3f}",
+                    "calibration_error": "{:.3f}",
+                    "net_return": "{:.1%}",
+                    "max_drawdown": "{:.1%}",
+                    "bootstrap_ci_low": "{:.1%}",
+                    "permutation_p_value": "{:.3f}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
 
     st.subheader("Full vs Pruned")
     pruning_30 = feature_pruning_report[

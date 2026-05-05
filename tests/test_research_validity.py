@@ -26,12 +26,15 @@ from research_pipeline import (
     window_fingerprint,
 )
 from diagnostic_outputs import (
+    _btc_trend_masks,
     candidate_feature_sets,
     derivatives_coverage,
+    feature_pruning_report,
     feature_group_for_feature,
     select_nested_pruned_features,
+    sol_stability_candidate_pairs,
 )
-from schemas import DIAGNOSTIC_OUTPUT_SCHEMAS
+from schemas import DIAGNOSTIC_OUTPUT_SCHEMAS, empty_diagnostic_frame, validate_frame
 
 
 def synthetic_research_raw(rows=1500):
@@ -235,6 +238,8 @@ def test_diagnostic_schemas_include_required_outputs():
         "factor_quality_scorecard.csv",
         "signal_quality_report.csv",
         "pruned_feature_leaderboard.csv",
+        "feature_pruning_report.csv",
+        "sol_stability_report.csv",
     ]:
         assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
     assert "balanced_accuracy" in DIAGNOSTIC_OUTPUT_SCHEMAS["derivatives_impact.csv"]
@@ -244,6 +249,109 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "promotion_eligible" in DIAGNOSTIC_OUTPUT_SCHEMAS["pruned_feature_leaderboard.csv"]
     assert "long_hit_rate" in DIAGNOSTIC_OUTPUT_SCHEMAS["signal_quality_report.csv"]
     assert "correlation_cluster" in DIAGNOSTIC_OUTPUT_SCHEMAS["factor_quality_scorecard.csv"]
+    assert "improvement_vs_all_features_accuracy" in DIAGNOSTIC_OUTPUT_SCHEMAS["feature_pruning_report.csv"]
+    assert "passes_stability_check" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_stability_report.csv"]
+
+
+def test_btc_up_down_slice_creation_uses_known_btc_history():
+    dates = pd.date_range("2023-01-01", periods=240, freq="D")
+    btc = pd.Series(np.r_[np.linspace(100, 200, 140), np.linspace(200, 120, 100)], index=dates)
+    raw = pd.DataFrame({"btc_proxy_close": btc}, index=dates)
+    masks = _btc_trend_masks(raw, dates)
+    assert masks["BTC-up"].any()
+    assert masks["BTC-down"].any()
+    assert not (masks["BTC-up"] & masks["BTC-down"]).any()
+
+
+def test_sol_stability_report_candidate_pairs_include_selected_model():
+    pairs = sol_stability_candidate_pairs("sol")
+    assert ("all_features", "random_forest") in pairs
+    assert ("price_plus_risk_assets", "logistic_linear") in pairs
+    assert sol_stability_candidate_pairs("btc") == []
+
+
+def test_feature_pruning_report_marks_unstable_candidates_not_promoted():
+    run_id = "btc_research_test"
+    base = pd.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "model": "logistic_linear",
+                "sample_count": 36,
+                "directional_accuracy": 0.52,
+                "brier_score": 0.24,
+                "calibration_error": 0.10,
+                "tc_adjusted_return": 0.20,
+                "sharpe": 0.40,
+                "max_drawdown": -0.20,
+                "beats_buy_hold_direction": False,
+                "beats_momentum_30d": False,
+                "beats_momentum_90d": False,
+                "beats_random_baseline": True,
+                "reliability_label": "Low confidence",
+                "notes": "current all features",
+            }
+        ]
+    )
+    pruned = pd.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "asset_id": "btc",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "btc_dollar_rates_cycle",
+                "model_name": "logistic_linear",
+                "n_features": 10,
+                "median_selected_features": 7,
+                "n_samples": 36,
+                "directional_accuracy": 0.58,
+                "balanced_accuracy": 0.58,
+                "brier_score": 0.23,
+                "calibration_error": 0.09,
+                "sharpe": 0.70,
+                "max_drawdown": -0.15,
+                "net_return": 0.40,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": True,
+                "beats_random_baseline": True,
+                "selection_eligible": True,
+                "promotion_eligible": False,
+                "reliability_label": "Medium confidence",
+                "window_fingerprint": "abc",
+                "rejection_reason": "failed_bootstrap_or_permutation_stability_check",
+            }
+        ]
+    )
+    signal = pd.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "asset_id": "btc",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "btc_dollar_rates_cycle",
+                "model_name": "logistic_linear",
+                "bootstrap_ci_low": 0.49,
+                "bootstrap_ci_high": 0.68,
+                "permutation_p_value": 0.20,
+            }
+        ]
+    )
+    report = feature_pruning_report(run_id, pruned, signal, base)
+    row = report[report["candidate_feature_set"] == "btc_dollar_rates_cycle"].iloc[0]
+    assert row["promotion_decision"] == "reject"
+    assert row["report_label"] == "promising_but_unstable"
+    assert row["bootstrap_ci_low"] < 0.50
+
+
+def test_streamlit_optional_new_diagnostics_can_be_empty_with_schema():
+    for filename in ["feature_pruning_report.csv", "sol_stability_report.csv"]:
+        frame = empty_diagnostic_frame(filename)
+        validate_frame(filename, frame)
 
 
 def test_feature_group_mapping_is_stable():

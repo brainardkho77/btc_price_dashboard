@@ -1,14 +1,14 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `btc_research_20260504T121835Z`
+- Full refresh run ID: `btc_research_20260505T051934Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
 - no_valid_edge triggered correctly: `True`
 
 ## Why Quick Mode Looked Better
-Quick mode used `2018-01-01` to `2026-05-04` with `75` 30d official samples and selected `hgb`. Full refresh used `2015-01-01` to `2026-05-04` with `100` 30d official samples and selected `no_valid_edge`. The quick edge disappeared because the broader 2015+ sample added regimes where the ML models did not beat the 90d momentum baseline or the full baseline set after costs.
+Quick mode used `2018-01-01` to `2026-05-04` with `75` 30d official samples and selected `hgb`. Full refresh used `2015-01-01` to `2026-05-05` with `100` 30d official samples and selected `no_valid_edge`. The quick edge disappeared because the broader 2015+ sample added regimes where the ML models did not beat the 90d momentum baseline or the full baseline set after costs.
 
 ## 30d Official Model Comparison
 - Best ML model: `random_forest` with directional accuracy `54.0%`
@@ -40,10 +40,10 @@ Validation gates failed by ML model:
 - `logistic_linear` in `post_halving`: samples `24`, accuracy `66.7%`, net return `504.7%`, reliability `Low confidence`
 - `momentum_90d` in `low_volatility`: samples `66`, accuracy `65.2%`, net return `2371.9%`, reliability `Low confidence`
 - `random_forest` in `post_etf`: samples `27`, accuracy `63.0%`, net return `143.6%`, reliability `Low confidence`
-- `logistic_linear` in `post_etf`: samples `27`, accuracy `63.0%`, net return `122.3%`, reliability `Low confidence`
 - `buy_hold_direction` in `post_halving`: samples `24`, accuracy `62.5%`, net return `662.4%`, reliability `Low confidence`
 - `momentum_90d` in `high_rate`: samples `66`, accuracy `62.1%`, net return `267.2%`, reliability `Low confidence`
 - `random_forest` in `bear_market`: samples `45`, accuracy `60.0%`, net return `174.6%`, reliability `Low confidence`
+- `logistic_linear` in `post_etf`: samples `27`, accuracy `59.3%`, net return `101.2%`, reliability `Low confidence`
 - `hgb` in `post_halving`: samples `24`, accuracy `58.3%`, net return `337.5%`, reliability `Low confidence`
 - `random_forest` in `post_halving`: samples `24`, accuracy `58.3%`, net return `636.5%`, reliability `Low confidence`
 - `momentum_90d` in `bear_market`: samples `45`, accuracy `57.8%`, net return `64.0%`, reliability `Low confidence`

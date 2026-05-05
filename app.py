@@ -82,6 +82,8 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "factor_quality": read_diagnostic("factor_quality_scorecard.csv"),
         "signal_quality": read_diagnostic("signal_quality_report.csv"),
         "pruned_leaderboard": read_diagnostic("pruned_feature_leaderboard.csv"),
+        "feature_pruning_report": read_diagnostic("feature_pruning_report.csv"),
+        "sol_stability_report": read_diagnostic("sol_stability_report.csv"),
     }
     data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     data["diagnostic_warnings"] = diagnostic_warnings
@@ -196,6 +198,8 @@ polymarket_impact = outputs["polymarket_impact"]
 factor_quality = outputs["factor_quality"]
 signal_quality = outputs["signal_quality"]
 pruned_leaderboard = outputs["pruned_leaderboard"]
+feature_pruning_report = outputs["feature_pruning_report"]
+sol_stability_report = outputs["sol_stability_report"]
 manifest = outputs["manifest"]
 asset_name = str(manifest.get("asset_name") or asset_config.display_name)
 
@@ -324,6 +328,104 @@ with signal_tab:
         c4.metric("Best pruned accuracy", fmt_pct(best_pruned.iloc[0]["directional_accuracy"]), str(best_pruned.iloc[0]["candidate_feature_set"]))
     else:
         c4.metric("Best pruned accuracy", "n/a")
+
+    st.subheader("Full vs Pruned")
+    pruning_30 = feature_pruning_report[
+        (feature_pruning_report["horizon"] == 30)
+        & (feature_pruning_report["window_type"] == "official_monthly")
+    ].copy()
+    if pruning_30.empty:
+        st.warning("No precomputed feature pruning rollup is available.")
+    else:
+        compact_cols = [
+            "candidate_feature_set",
+            "model_name",
+            "n_samples",
+            "official_30d_accuracy",
+            "brier_score",
+            "calibration_error",
+            "net_return",
+            "max_drawdown",
+            "improvement_vs_all_features_accuracy",
+            "bootstrap_ci_low",
+            "permutation_p_value",
+            "promotion_decision",
+            "report_label",
+        ]
+        st.dataframe(
+            pruning_30.sort_values(
+                ["report_label", "official_30d_accuracy", "net_return"],
+                ascending=[True, False, False],
+                na_position="last",
+            )[compact_cols].head(40).style.format(
+                {
+                    "official_30d_accuracy": "{:.1%}",
+                    "brier_score": "{:.3f}",
+                    "calibration_error": "{:.3f}",
+                    "net_return": "{:.1%}",
+                    "max_drawdown": "{:.1%}",
+                    "improvement_vs_all_features_accuracy": "{:.1%}",
+                    "bootstrap_ci_low": "{:.1%}",
+                    "permutation_p_value": "{:.3f}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+        if selected_asset == "btc":
+            st.subheader("BTC Promising But Rejected")
+            btc_rejected = pruning_30[pruning_30["report_label"].isin(["promising_but_unstable", "promising_but_rejected"])].copy()
+            if btc_rejected.empty:
+                st.caption("No promising-but-rejected BTC candidate was recorded in this run.")
+            else:
+                st.dataframe(
+                    btc_rejected[
+                        [
+                            "candidate_feature_set",
+                            "model_name",
+                            "official_30d_accuracy",
+                            "net_return",
+                            "bootstrap_ci_low",
+                            "permutation_p_value",
+                            "rejection_reason",
+                        ]
+                    ].sort_values("official_30d_accuracy", ascending=False).style.format(
+                        {
+                            "official_30d_accuracy": "{:.1%}",
+                            "net_return": "{:.1%}",
+                            "bootstrap_ci_low": "{:.1%}",
+                            "permutation_p_value": "{:.3f}",
+                        }
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+        if selected_asset == "sol":
+            st.subheader("SOL Stability")
+            if sol_stability_report.empty:
+                st.warning("No precomputed SOL stability report is available.")
+            else:
+                st.dataframe(
+                    sol_stability_report.sort_values(
+                        ["candidate_feature_set", "model_name", "period_slice"]
+                    ).style.format(
+                        {
+                            "directional_accuracy": "{:.1%}",
+                            "brier_score": "{:.3f}",
+                            "calibration_error": "{:.3f}",
+                            "net_return": "{:.1%}",
+                            "sharpe": "{:.2f}",
+                            "max_drawdown": "{:.1%}",
+                            "bootstrap_ci_low": "{:.1%}",
+                            "bootstrap_ci_high": "{:.1%}",
+                            "permutation_p_value": "{:.3f}",
+                        }
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
 
     if pruned_30.empty:
         st.warning("No precomputed pruned feature leaderboard is available.")

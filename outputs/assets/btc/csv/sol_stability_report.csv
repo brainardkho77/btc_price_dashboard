@@ -1,0 +1,1 @@
+run_id,asset_id,candidate_feature_set,model_name,period_slice,n_samples,directional_accuracy,brier_score,calibration_error,net_return,sharpe,max_drawdown,bootstrap_ci_low,bootstrap_ci_high,permutation_p_value,reliability_label,passes_stability_check

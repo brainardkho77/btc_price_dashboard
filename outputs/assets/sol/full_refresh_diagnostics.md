@@ -1,14 +1,14 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `sol_research_20260504T130959Z`
+- Full refresh run ID: `sol_research_20260505T055548Z`
 - Selected model: `random_forest`
 - Signal: `neutral`
 - Reliability: `Medium confidence`
 - no_valid_edge triggered correctly: `False`
 
 ## Why Quick Mode Looked Better
-Quick mode used `2020-04-10` to `2026-05-04` with `48` 30d official samples and selected `random_forest`. Full refresh used `2020-04-10` to `2026-05-04` with `36` 30d official samples and selected `random_forest`. The quick edge disappeared because the broader 2015+ sample added regimes where the ML models did not beat the 90d momentum baseline or the full baseline set after costs.
+Quick mode used `2020-04-10` to `2026-05-04` with `48` 30d official samples and selected `random_forest`. Full refresh used `2020-04-10` to `2026-05-05` with `36` 30d official samples and selected `random_forest`. The quick edge disappeared because the broader 2015+ sample added regimes where the ML models did not beat the 90d momentum baseline or the full baseline set after costs.
 
 ## 30d Official Model Comparison
 - Best ML model: `random_forest` with directional accuracy `69.4%`

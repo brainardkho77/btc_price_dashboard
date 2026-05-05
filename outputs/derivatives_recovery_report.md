@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `btc_research_20260504T121835Z`
+- Run ID: `btc_research_20260505T051934Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -30,11 +30,11 @@
 - It is not selected unless it passes the official 30d selection rules in the main leaderboard.
 
 ## Feature Group Stability
-- `price_momentum_only` / `momentum_90d`: `6` stable slices
-- `dollar_rates_only` / `logistic_linear`: `5` stable slices
-- `price_momentum_only` / `random_forest`: `5` stable slices
-- `all_features` / `hgb`: `4` stable slices
-- `all_features` / `random_forest`: `4` stable slices
+- `dollar_rates_only` / `logistic_linear`: `7` stable slices
+- `price_momentum_only` / `momentum_90d`: `7` stable slices
+- `price_momentum_only` / `random_forest`: `7` stable slices
+- `all_features` / `hgb`: `6` stable slices
+- `all_features` / `random_forest`: `5` stable slices
 
 ## Conclusion
 - Derivatives improved 30d official diagnostics: `True`

@@ -2,7 +2,7 @@
 
 ## Run Summary
 - Asset: `SOL`
-- Run ID: `sol_research_20260504T130959Z`
+- Run ID: `sol_research_20260505T055548Z`
 - Selected model: `random_forest`
 - Signal: `neutral`
 - Reliability: `Medium confidence`
@@ -11,10 +11,21 @@
 
 ## Best Pruned Candidate
 - `price_plus_risk_assets` / `logistic_linear`: samples `36`, accuracy `69.4%`, Brier `0.218`, calibration `0.080`, Sharpe `1.15`, drawdown `-37.4%`, net return `576.4%`.
+- Stability evidence: bootstrap lower bound `55.6%`, bootstrap upper bound `83.3%`, permutation p-value `0.032`.
 - Promotion eligible: `False`. Reason: `did_not_improve_current_all_features_without_material_metric_worsening`
 
 ## Promotion Decision
 - No pruned feature set passed the strict promotion rules. The official conclusion is unchanged.
+
+## Promising But Rejected Candidates
+- `all_features` / `logistic_linear`: label `promising_but_unstable`, accuracy `66.7%`, net return `942.1%`, CI low `50.0%`, p-value `0.048`, reason `did_not_improve_current_all_features_without_material_metric_worsening; failed_bootstrap_or_permutation_stability_check`.
+- `no_onchain` / `logistic_linear`: label `promising_but_unstable`, accuracy `66.7%`, net return `942.1%`, CI low `50.0%`, p-value `0.048`, reason `did_not_improve_current_all_features_without_material_metric_worsening; failed_bootstrap_or_permutation_stability_check`.
+- `no_derivatives` / `logistic_linear`: label `promising_but_unstable`, accuracy `66.7%`, net return `942.1%`, CI low `50.0%`, p-value `0.048`, reason `did_not_improve_current_all_features_without_material_metric_worsening; failed_bootstrap_or_permutation_stability_check`.
+- `no_polymarket` / `logistic_linear`: label `promising_but_unstable`, accuracy `66.7%`, net return `942.1%`, CI low `50.0%`, p-value `0.048`, reason `did_not_improve_current_all_features_without_material_metric_worsening; failed_bootstrap_or_permutation_stability_check`.
+- `sol_dollar_rates_only` / `random_forest`: label `promising_but_unstable`, accuracy `66.7%`, net return `767.3%`, CI low `50.0%`, p-value `0.024`, reason `did_not_improve_current_all_features_without_material_metric_worsening; failed_bootstrap_or_permutation_stability_check`.
+- `price_plus_dollar_rates` / `random_forest`: label `promising_but_unstable`, accuracy `63.9%`, net return `587.7%`, CI low `47.2%`, p-value `0.092`, reason `did_not_improve_current_all_features_without_material_metric_worsening; failed_bootstrap_or_permutation_stability_check`.
+- `sol_rates_risk_price` / `hgb`: label `promising_but_unstable`, accuracy `63.9%`, net return `581.3%`, CI low `47.2%`, p-value `0.088`, reason `did_not_improve_current_all_features_without_material_metric_worsening; failed_bootstrap_or_permutation_stability_check`.
+- `sol_risk_assets_only` / `logistic_linear`: label `promising_but_unstable`, accuracy `63.9%`, net return `532.4%`, CI low `47.2%`, p-value `0.112`, reason `did_not_improve_current_all_features_without_material_metric_worsening; failed_bootstrap_or_permutation_stability_check`.
 
 ## Signal Quality
 - `price_plus_macro` / `logistic_linear`: long signals `21`, abstention `41.7%`, long hit rate `66.7%`, long average return `16.1%`, net return `987.2%`.

@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `sol_research_20260504T130959Z`
+- Run ID: `sol_research_20260505T055548Z`
 - Selected model: `random_forest`
 - Signal: `neutral`
 - Reliability: `Medium confidence`
@@ -25,11 +25,11 @@
 - It is not selected unless it passes the official 30d selection rules in the main leaderboard.
 
 ## Feature Group Stability
-- `all_features` / `logistic_linear`: `6` stable slices
-- `all_features` / `random_forest`: `6` stable slices
-- `dollar_rates_only` / `logistic_linear`: `6` stable slices
-- `price_momentum_only` / `momentum_90d`: `6` stable slices
-- `price_momentum_only` / `random_forest`: `6` stable slices
+- `all_features` / `logistic_linear`: `9` stable slices
+- `all_features` / `random_forest`: `9` stable slices
+- `price_momentum_only` / `random_forest`: `9` stable slices
+- `dollar_rates_only` / `logistic_linear`: `8` stable slices
+- `all_features` / `hgb`: `7` stable slices
 
 ## Conclusion
 - Derivatives improved 30d official diagnostics: `False`

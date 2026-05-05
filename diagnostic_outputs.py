@@ -1052,6 +1052,183 @@ def factor_quality_scorecard(
     return pd.DataFrame(rows)
 
 
+def _confidence_lookup(confidence: Optional[pd.DataFrame]) -> Dict[str, dict]:
+    if confidence is None or confidence.empty:
+        return {}
+    conf = confidence[
+        (confidence["horizon"] == 30)
+        & (confidence["window_type"] == "official_monthly")
+        & (confidence["metric"] == "directional_accuracy")
+    ].copy()
+    return {str(row["model"]): row.to_dict() for _, row in conf.iterrows()}
+
+
+def _beats_all_baselines(row: pd.Series) -> bool:
+    return bool(
+        row.get("beats_buy_hold", row.get("beats_buy_hold_direction", False))
+        and row.get("beats_momentum_30d", False)
+        and row.get("beats_momentum_90d", False)
+        and row.get("beats_random_baseline", False)
+    )
+
+
+def _pruning_report_label(row: pd.Series, improvement_accuracy: float) -> str:
+    if bool(row.get("promotion_eligible", False)):
+        return "promoted"
+    reason = str(row.get("rejection_reason", ""))
+    accuracy = row.get("directional_accuracy", np.nan)
+    net_return = row.get("net_return", np.nan)
+    promising = bool(
+        pd.notna(accuracy)
+        and (
+            float(accuracy) >= 0.55
+            or (pd.notna(improvement_accuracy) and float(improvement_accuracy) > 0)
+            or (pd.notna(net_return) and float(net_return) > 0)
+        )
+    )
+    if "failed_bootstrap_or_permutation_stability_check" in reason and promising:
+        return "promising_but_unstable"
+    if promising:
+        return "promising_but_rejected"
+    return "bad_or_noisy"
+
+
+def feature_pruning_report(
+    run_id: str,
+    pruned: pd.DataFrame,
+    signal: pd.DataFrame,
+    base_leaderboard: pd.DataFrame,
+    base_confidence: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    from research_pipeline import BASELINE_MODELS
+
+    asset_id = _asset_id_from_run(run_id)
+    rows = []
+    official_30 = base_leaderboard[
+        (base_leaderboard["horizon"] == 30)
+        & (base_leaderboard["window_type"] == "official_monthly")
+    ].copy()
+    official_ml = official_30[~official_30["model"].isin(BASELINE_MODELS)].copy()
+    confidence_by_model = _confidence_lookup(base_confidence)
+    base_by_model = {str(row["model"]): row.to_dict() for _, row in official_ml.iterrows()}
+    best_base = (
+        official_ml.sort_values(
+            ["directional_accuracy", "brier_score", "sharpe", "max_drawdown", "calibration_error"],
+            ascending=[False, True, False, False, True],
+            na_position="last",
+        )
+        .head(1)
+        .to_dict("records")
+    )
+    fallback_base = best_base[0] if best_base else {}
+
+    for _, row in official_ml.iterrows():
+        conf = confidence_by_model.get(str(row["model"]), {})
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "all_features_official",
+                "model_name": row["model"],
+                "n_samples": int(row.get("sample_count", 0)),
+                "official_30d_accuracy": row.get("directional_accuracy", np.nan),
+                "brier_score": row.get("brier_score", np.nan),
+                "calibration_error": row.get("calibration_error", np.nan),
+                "net_return": row.get("tc_adjusted_return", np.nan),
+                "max_drawdown": row.get("max_drawdown", np.nan),
+                "improvement_vs_all_features_accuracy": 0.0,
+                "improvement_vs_all_features_net_return": 0.0,
+                "beats_baselines": bool(
+                    row.get("beats_buy_hold_direction", False)
+                    and row.get("beats_momentum_30d", False)
+                    and row.get("beats_momentum_90d", False)
+                    and row.get("beats_random_baseline", False)
+                ),
+                "bootstrap_ci_low": conf.get("ci_low", np.nan),
+                "bootstrap_ci_high": conf.get("ci_high", np.nan),
+                "permutation_p_value": conf.get("permutation_p_value", np.nan),
+                "promotion_decision": "current_official_reference",
+                "rejection_reason": row.get("notes", ""),
+                "reliability_label": row.get("reliability_label", "Low confidence"),
+                "report_label": "current_all_features",
+            }
+        )
+
+    if pruned.empty:
+        return pd.DataFrame(rows)
+
+    pruned_30 = pruned[
+        (pruned["horizon"] == 30)
+        & (pruned["window_type"] == "official_monthly")
+        & (~pruned["model_name"].isin(BASELINE_MODELS))
+    ].copy()
+    if pruned_30.empty:
+        return pd.DataFrame(rows)
+
+    signal_cols = [
+        "run_id",
+        "asset_id",
+        "horizon",
+        "window_type",
+        "candidate_feature_set",
+        "model_name",
+        "bootstrap_ci_low",
+        "bootstrap_ci_high",
+        "permutation_p_value",
+    ]
+    signal_small = signal[signal_cols].copy() if not signal.empty else pd.DataFrame(columns=signal_cols)
+    merged = pruned_30.merge(
+        signal_small,
+        on=["run_id", "asset_id", "horizon", "window_type", "candidate_feature_set", "model_name"],
+        how="left",
+    )
+    for _, row in merged.iterrows():
+        base = base_by_model.get(str(row["model_name"]), fallback_base)
+        base_acc = base.get("directional_accuracy", np.nan)
+        base_return = base.get("tc_adjusted_return", np.nan)
+        improvement_accuracy = (
+            float(row["directional_accuracy"]) - float(base_acc)
+            if pd.notna(row.get("directional_accuracy")) and pd.notna(base_acc)
+            else np.nan
+        )
+        improvement_return = (
+            float(row["net_return"]) - float(base_return)
+            if pd.notna(row.get("net_return")) and pd.notna(base_return)
+            else np.nan
+        )
+        promoted = bool(row.get("promotion_eligible", False))
+        label = _pruning_report_label(row, improvement_accuracy)
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": row["candidate_feature_set"],
+                "model_name": row["model_name"],
+                "n_samples": int(row.get("n_samples", 0)),
+                "official_30d_accuracy": row.get("directional_accuracy", np.nan),
+                "brier_score": row.get("brier_score", np.nan),
+                "calibration_error": row.get("calibration_error", np.nan),
+                "net_return": row.get("net_return", np.nan),
+                "max_drawdown": row.get("max_drawdown", np.nan),
+                "improvement_vs_all_features_accuracy": improvement_accuracy,
+                "improvement_vs_all_features_net_return": improvement_return,
+                "beats_baselines": _beats_all_baselines(row),
+                "bootstrap_ci_low": row.get("bootstrap_ci_low", np.nan),
+                "bootstrap_ci_high": row.get("bootstrap_ci_high", np.nan),
+                "permutation_p_value": row.get("permutation_p_value", np.nan),
+                "promotion_decision": "promote" if promoted else "reject",
+                "rejection_reason": row.get("rejection_reason", ""),
+                "reliability_label": row.get("reliability_label", "Low confidence"),
+                "report_label": label,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _pruned_rejection_reason(summary: dict, promotion_eligible: bool, base_comparison_ok: bool, stability_ok: bool) -> str:
     reasons = []
     if promotion_eligible:
@@ -1075,6 +1252,7 @@ def pruned_feature_diagnostics(
     feature_result,
     config: ResearchConfig,
     base_leaderboard: pd.DataFrame,
+    base_confidence: Optional[pd.DataFrame] = None,
     *,
     quick: bool,
 ) -> Dict[str, pd.DataFrame]:
@@ -1243,10 +1421,21 @@ def pruned_feature_diagnostics(
                         quick=quick,
                     )
                 )
+    factor_frame = factor_quality_scorecard(run_id, raw, feature_result, config)
+    signal_frame = pd.DataFrame(signal_rows)
+    pruned_frame = pd.DataFrame(leaderboard_rows)
     diagnostics = {
-        "factor_quality_scorecard.csv": factor_quality_scorecard(run_id, raw, feature_result, config),
-        "signal_quality_report.csv": pd.DataFrame(signal_rows),
-        "pruned_feature_leaderboard.csv": pd.DataFrame(leaderboard_rows),
+        "factor_quality_scorecard.csv": factor_frame,
+        "signal_quality_report.csv": signal_frame,
+        "pruned_feature_leaderboard.csv": pruned_frame,
+        "feature_pruning_report.csv": feature_pruning_report(
+            run_id,
+            pruned_frame,
+            signal_frame,
+            base_leaderboard,
+            base_confidence,
+        ),
+        "sol_stability_report.csv": sol_stability_report(run_id, raw, feature_result, config, quick=quick),
     }
     return diagnostics
 
@@ -1308,11 +1497,26 @@ def derivatives_coverage(run_id: str, raw: pd.DataFrame, feature_result, availab
     return pd.DataFrame(rows)
 
 
+def _btc_trend_masks(raw: pd.DataFrame, dates: pd.DatetimeIndex) -> Dict[str, pd.Series]:
+    btc_col = "btc_proxy_close" if "btc_proxy_close" in raw.columns else "btc_close" if "btc_close" in raw.columns else ""
+    if not btc_col:
+        empty = pd.Series(False, index=dates)
+        return {"BTC-up": empty, "BTC-down": empty.copy()}
+    btc = raw[btc_col].astype(float)
+    btc_ret_90 = np.log(btc / btc.shift(90))
+    aligned = btc_ret_90.reindex(dates)
+    return {
+        "BTC-up": (aligned > 0).fillna(False),
+        "BTC-down": (aligned <= 0).fillna(False),
+    }
+
+
 def _period_slice_masks(raw: pd.DataFrame, dates: pd.DatetimeIndex) -> Dict[str, pd.Series]:
     aligned = pd.DataFrame(index=dates)
     aligned["2015-2017"] = (dates >= pd.Timestamp("2015-01-01")) & (dates <= pd.Timestamp("2017-12-31"))
     aligned["2018-2020"] = (dates >= pd.Timestamp("2018-01-01")) & (dates <= pd.Timestamp("2020-12-31"))
     aligned["2021-2023"] = (dates >= pd.Timestamp("2021-01-01")) & (dates <= pd.Timestamp("2023-12-31"))
+    aligned["2023-2024"] = (dates >= pd.Timestamp("2023-01-01")) & (dates <= pd.Timestamp("2024-12-31"))
     aligned["2024-present"] = dates >= pd.Timestamp("2024-01-01")
     aligned["pre-ETF"] = dates < pd.Timestamp("2024-01-11")
     aligned["post-ETF"] = dates >= pd.Timestamp("2024-01-11")
@@ -1321,7 +1525,127 @@ def _period_slice_masks(raw: pd.DataFrame, dates: pd.DatetimeIndex) -> Dict[str,
     aligned["low-rate"] = regimes["low_rate"].to_numpy()
     aligned["high-vol"] = regimes["high_volatility"].to_numpy()
     aligned["low-vol"] = regimes["low_volatility"].to_numpy()
+    btc_masks = _btc_trend_masks(raw, dates)
+    aligned["BTC-up"] = btc_masks["BTC-up"].to_numpy()
+    aligned["BTC-down"] = btc_masks["BTC-down"].to_numpy()
     return {col: aligned[col].fillna(False) for col in aligned.columns}
+
+
+def sol_stability_candidate_pairs(asset_id: str) -> List[Tuple[str, str]]:
+    if asset_id != "sol":
+        return []
+    return [
+        ("all_features", "random_forest"),
+        ("price_plus_risk_assets", "logistic_linear"),
+        ("price_plus_macro", "logistic_linear"),
+        ("sol_dollar_rates_only", "random_forest"),
+    ]
+
+
+def _predict_candidate_model(
+    raw: pd.DataFrame,
+    feature_result,
+    candidate_cols: Sequence[str],
+    model_name: str,
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> pd.DataFrame:
+    from research_pipeline import build_target_frame, build_walk_forward_windows, predict_model_windows
+
+    if len(candidate_cols) < 5:
+        return pd.DataFrame()
+    horizon = 30
+    window_type = "official_monthly"
+    target_frame = build_target_frame(raw, feature_result.features, candidate_cols, horizon)
+    windows = build_walk_forward_windows(target_frame, horizon, window_type, config, quick=quick)
+    if quick and len(windows) > 12:
+        windows = windows[-12:]
+    if not windows:
+        return pd.DataFrame()
+    return predict_model_windows(model_name, target_frame, candidate_cols, windows, config, quick=quick)
+
+
+def sol_stability_report(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> pd.DataFrame:
+    from research_pipeline import compute_metrics
+
+    asset_id = _asset_id_from_run(run_id)
+    pairs = sol_stability_candidate_pairs(asset_id)
+    if not pairs:
+        return empty_diagnostic_frame("sol_stability_report.csv")
+    candidate_sets = candidate_feature_sets(feature_result.feature_cols, asset_id)
+    requested_slices = ["2023-2024", "2024-present", "high-vol", "low-vol", "BTC-up", "BTC-down"]
+    rows = []
+    for candidate_name, model_name in pairs:
+        candidate_cols = candidate_sets.get(candidate_name, [])
+        preds = _predict_candidate_model(raw, feature_result, candidate_cols, model_name, config, quick=quick)
+        masks = _period_slice_masks(raw, pd.DatetimeIndex(preds.index if not preds.empty else []))
+        for period_slice in requested_slices:
+            mask = masks.get(period_slice, pd.Series(False, index=preds.index if not preds.empty else []))
+            part = preds.loc[mask.to_numpy()] if not preds.empty else pd.DataFrame()
+            if part.empty:
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "asset_id": asset_id,
+                        "candidate_feature_set": candidate_name,
+                        "model_name": model_name,
+                        "period_slice": period_slice,
+                        "n_samples": 0,
+                        "directional_accuracy": np.nan,
+                        "brier_score": np.nan,
+                        "calibration_error": np.nan,
+                        "net_return": np.nan,
+                        "sharpe": np.nan,
+                        "max_drawdown": np.nan,
+                        "bootstrap_ci_low": np.nan,
+                        "bootstrap_ci_high": np.nan,
+                        "permutation_p_value": np.nan,
+                        "reliability_label": "Low confidence",
+                        "passes_stability_check": False,
+                    }
+                )
+                continue
+            metrics, _ = compute_metrics(part, 30, "official_monthly", config.transaction_cost_bps)
+            ci_low, ci_high, p_value = _bootstrap_signal_quality(part, config, quick=quick)
+            passes = bool(
+                metrics.get("sample_count", 0) >= 8
+                and metrics.get("directional_accuracy", 0) >= 0.55
+                and metrics.get("tc_adjusted_return", -np.inf) > 0
+                and pd.notna(ci_low)
+                and ci_low >= 0.50
+                and pd.notna(p_value)
+                and p_value <= 0.10
+            )
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "candidate_feature_set": candidate_name,
+                    "model_name": model_name,
+                    "period_slice": period_slice,
+                    "n_samples": int(metrics.get("sample_count", 0)),
+                    "directional_accuracy": metrics.get("directional_accuracy", np.nan),
+                    "brier_score": metrics.get("brier_score", np.nan),
+                    "calibration_error": metrics.get("calibration_error", np.nan),
+                    "net_return": metrics.get("tc_adjusted_return", np.nan),
+                    "sharpe": metrics.get("sharpe", np.nan),
+                    "max_drawdown": metrics.get("max_drawdown", np.nan),
+                    "bootstrap_ci_low": ci_low,
+                    "bootstrap_ci_high": ci_high,
+                    "permutation_p_value": p_value,
+                    "reliability_label": "Medium confidence" if passes else "Low confidence",
+                    "passes_stability_check": passes,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def feature_group_stability(
@@ -1730,7 +2054,10 @@ def write_feature_pruning_summary(output_dir: Path) -> Path:
     pruned = pd.read_csv(output_dir / "csv" / "pruned_feature_leaderboard.csv")
     signal = pd.read_csv(output_dir / "csv" / "signal_quality_report.csv")
     factor = pd.read_csv(output_dir / "csv" / "factor_quality_scorecard.csv")
+    pruning_report_path = output_dir / "csv" / "feature_pruning_report.csv"
+    pruning_report = pd.read_csv(pruning_report_path) if pruning_report_path.exists() else pd.DataFrame()
     asset_name = str(manifest.get("asset_name") or manifest.get("asset_id") or "asset")
+    asset_id = str(manifest.get("asset_id") or "").lower()
     primary = latest[latest["is_primary_objective"] == True].iloc[0]
     official_30 = leaderboard[(leaderboard["horizon"] == 30) & (leaderboard["window_type"] == "official_monthly")].copy()
     baseline_models = {"buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"}
@@ -1775,12 +2102,23 @@ def write_feature_pruning_summary(output_dir: Path) -> Path:
         report.append("- No pruned candidate produced a valid 30d official ML result.")
     else:
         row = best_pruned.iloc[0]
+        detail = pruning_report[
+            (pruning_report["candidate_feature_set"] == row["candidate_feature_set"])
+            & (pruning_report["model_name"] == row["model_name"])
+        ].head(1) if not pruning_report.empty else pd.DataFrame()
         report.append(
             f"- `{row['candidate_feature_set']}` / `{row['model_name']}`: samples `{int(row['n_samples'])}`, "
             f"accuracy `{_fmt_pct(row['directional_accuracy'])}`, Brier `{_fmt_num(row['brier_score'], 3)}`, "
             f"calibration `{_fmt_num(row['calibration_error'], 3)}`, Sharpe `{_fmt_num(row['sharpe'])}`, "
             f"drawdown `{_fmt_pct(row['max_drawdown'])}`, net return `{_fmt_pct(row['net_return'])}`."
         )
+        if not detail.empty:
+            drow = detail.iloc[0]
+            report.append(
+                f"- Stability evidence: bootstrap lower bound `{_fmt_pct(drow['bootstrap_ci_low'])}`, "
+                f"bootstrap upper bound `{_fmt_pct(drow['bootstrap_ci_high'])}`, "
+                f"permutation p-value `{_fmt_num(drow['permutation_p_value'], 3)}`."
+            )
         report.append(f"- Promotion eligible: `{bool(row['promotion_eligible'])}`. Reason: `{row['rejection_reason']}`")
 
     report.extend(["", "## Promotion Decision"])
@@ -1789,6 +2127,46 @@ def write_feature_pruning_summary(output_dir: Path) -> Path:
     else:
         names = [f"{r['candidate_feature_set']} / {r['model_name']}" for _, r in promoted.iterrows()]
         report.append(f"- Promotion candidates found: `{', '.join(names)}`. Review before deploying a changed official signal.")
+
+    report.extend(["", "## Promising But Rejected Candidates"])
+    if pruning_report.empty:
+        report.append("- Feature pruning rollup was unavailable.")
+    else:
+        promising = pruning_report[pruning_report["report_label"].isin(["promising_but_unstable", "promising_but_rejected"])].copy()
+        promising = promising.sort_values(
+            ["report_label", "official_30d_accuracy", "net_return"],
+            ascending=[False, False, False],
+            na_position="last",
+        ).head(8)
+        if promising.empty:
+            report.append("- No promising-but-rejected candidates were recorded.")
+        else:
+            for _, row in promising.iterrows():
+                report.append(
+                    f"- `{row['candidate_feature_set']}` / `{row['model_name']}`: label `{row['report_label']}`, "
+                    f"accuracy `{_fmt_pct(row['official_30d_accuracy'])}`, net return `{_fmt_pct(row['net_return'])}`, "
+                    f"CI low `{_fmt_pct(row['bootstrap_ci_low'])}`, p-value `{_fmt_num(row['permutation_p_value'], 3)}`, "
+                    f"reason `{row['rejection_reason']}`."
+                )
+
+    if asset_id == "btc":
+        report.extend(["", "## BTC No-Edge Drilldown"])
+        drill = pruning_report[
+            (pruning_report["candidate_feature_set"] == "btc_dollar_rates_cycle")
+            & (pruning_report["model_name"] == "logistic_linear")
+        ].head(1) if not pruning_report.empty else pd.DataFrame()
+        if drill.empty:
+            report.append("- `btc_dollar_rates_cycle` / `logistic_linear` was unavailable in the pruning report.")
+        else:
+            row = drill.iloc[0]
+            bucket = "promising but unstable" if row["report_label"] == "promising_but_unstable" else "bad/noisy or not strong enough"
+            report.append(
+                f"- `btc_dollar_rates_cycle` / `logistic_linear` is classified as `{bucket}`: "
+                f"accuracy `{_fmt_pct(row['official_30d_accuracy'])}`, net return `{_fmt_pct(row['net_return'])}`, "
+                f"bootstrap lower bound `{_fmt_pct(row['bootstrap_ci_low'])}`, "
+                f"permutation p-value `{_fmt_num(row['permutation_p_value'], 3)}`."
+            )
+            report.append(f"- Rejection reason: `{row['rejection_reason']}`")
 
     report.extend(["", "## Signal Quality"])
     if best_signal.empty:
@@ -1856,6 +2234,7 @@ def write_diagnostics(
         feature_result,
         config,
         base_outputs["model_leaderboard.csv"],
+        base_outputs.get("confidence_intervals.csv"),
         quick=quick,
     )
     diagnostics = {

@@ -90,6 +90,9 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "fred_macro_impact_report": read_diagnostic("fred_macro_impact_report.csv"),
         "macro_candidate_impact_report": read_diagnostic("macro_candidate_impact_report.csv"),
         "fred_vs_fallback_summary": read_diagnostic("fred_vs_fallback_summary.csv"),
+        "sol_selection_audit": read_diagnostic("sol_selection_audit.csv"),
+        "sol_signal_policy_deployment": read_diagnostic("sol_signal_policy_deployment.csv"),
+        "btc_no_edge_drilldown": read_diagnostic("btc_no_edge_drilldown.csv"),
     }
     data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     data["diagnostic_warnings"] = diagnostic_warnings
@@ -212,6 +215,9 @@ asset_feature_set_leaderboard = outputs["asset_feature_set_leaderboard"]
 fred_macro_impact = outputs["fred_macro_impact_report"]
 macro_candidate_impact = outputs["macro_candidate_impact_report"]
 fred_vs_fallback = outputs["fred_vs_fallback_summary"]
+sol_selection_audit = outputs["sol_selection_audit"]
+sol_signal_policy_deployment = outputs["sol_signal_policy_deployment"]
+btc_no_edge_drilldown_frame = outputs["btc_no_edge_drilldown"]
 manifest = outputs["manifest"]
 asset_name = str(manifest.get("asset_name") or asset_config.display_name)
 
@@ -456,6 +462,85 @@ with signal_tab:
             hide_index=True,
         )
 
+    if selected_asset == "sol":
+        st.subheader("SOL Selection Audit")
+        if sol_selection_audit.empty:
+            st.warning("No precomputed SOL selection audit is available.")
+        else:
+            st.dataframe(
+                sol_selection_audit.sort_values(
+                    ["audit_role", "directional_accuracy", "tc_adjusted_return"],
+                    ascending=[True, False, False],
+                    na_position="last",
+                )[
+                    [
+                        "candidate_feature_set",
+                        "model_name",
+                        "audit_role",
+                        "n_samples",
+                        "directional_accuracy",
+                        "tc_adjusted_return",
+                        "accuracy_delta_vs_reference",
+                        "return_delta_vs_reference",
+                        "bootstrap_ci_low",
+                        "permutation_p_value",
+                        "promotion_eligible",
+                        "audit_conclusion",
+                        "notes",
+                    ]
+                ].style.format(
+                    {
+                        "directional_accuracy": "{:.1%}",
+                        "tc_adjusted_return": "{:.1%}",
+                        "accuracy_delta_vs_reference": "{:.1%}",
+                        "return_delta_vs_reference": "{:.1%}",
+                        "bootstrap_ci_low": "{:.1%}",
+                        "permutation_p_value": "{:.3f}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+
+        st.subheader("SOL Signal Policy Deployment Check")
+        if sol_signal_policy_deployment.empty:
+            st.warning("No precomputed SOL signal policy deployment check is available.")
+        else:
+            st.dataframe(
+                sol_signal_policy_deployment[
+                    [
+                        "candidate_feature_set",
+                        "model_name",
+                        "active_signal_count",
+                        "active_coverage",
+                        "active_hit_rate",
+                        "missed_up_month_rate",
+                        "after_cost_return",
+                        "max_drawdown",
+                        "bootstrap_ci_low",
+                        "permutation_p_value",
+                        "deployment_role",
+                        "latest_strategy_action",
+                        "latest_risk_label",
+                        "can_change_selected_model",
+                        "audit_conclusion",
+                    ]
+                ].style.format(
+                    {
+                        "active_coverage": "{:.1%}",
+                        "active_hit_rate": "{:.1%}",
+                        "missed_up_month_rate": "{:.1%}",
+                        "after_cost_return": "{:.1%}",
+                        "max_drawdown": "{:.1%}",
+                        "bootstrap_ci_low": "{:.1%}",
+                        "permutation_p_value": "{:.3f}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+            st.caption("This policy can adjust interpretation only; it cannot change the selected model.")
+
     st.subheader("Full vs Pruned")
     pruning_30 = feature_pruning_report[
         (feature_pruning_report["horizon"] == 30)
@@ -502,9 +587,37 @@ with signal_tab:
 
         if selected_asset == "btc":
             st.subheader("BTC Promising But Rejected")
-            btc_rejected = pruning_30[pruning_30["report_label"].isin(["promising_but_unstable", "promising_but_rejected"])].copy()
+            if btc_no_edge_drilldown_frame.empty:
+                btc_rejected = pruning_30[pruning_30["report_label"].isin(["promising_but_unstable", "promising_but_rejected"])].copy()
+            else:
+                btc_rejected = btc_no_edge_drilldown_frame.copy()
             if btc_rejected.empty:
-                st.caption("No promising-but-rejected BTC candidate was recorded in this run.")
+                st.caption("No BTC no-edge drilldown row was recorded in this run.")
+            elif "rejection_category" in btc_rejected:
+                st.dataframe(
+                    btc_rejected[
+                        [
+                            "candidate_feature_set",
+                            "model_name",
+                            "rejection_category",
+                            "directional_accuracy",
+                            "tc_adjusted_return",
+                            "bootstrap_ci_low",
+                            "permutation_p_value",
+                            "rejection_reason",
+                            "drilldown_note",
+                        ]
+                    ].sort_values("directional_accuracy", ascending=False).style.format(
+                        {
+                            "directional_accuracy": "{:.1%}",
+                            "tc_adjusted_return": "{:.1%}",
+                            "bootstrap_ci_low": "{:.1%}",
+                            "permutation_p_value": "{:.3f}",
+                        }
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
             else:
                 st.dataframe(
                     btc_rejected[
@@ -664,6 +777,43 @@ with no_edge_tab:
         width="stretch",
         hide_index=True,
     )
+
+    if selected_asset == "btc":
+        st.subheader("BTC No-Edge Drilldown")
+        if btc_no_edge_drilldown_frame.empty:
+            st.warning("No precomputed BTC no-edge drilldown is available.")
+        else:
+            st.dataframe(
+                btc_no_edge_drilldown_frame.sort_values(
+                    ["rejection_category", "directional_accuracy"],
+                    ascending=[True, False],
+                    na_position="last",
+                )[
+                    [
+                        "candidate_feature_set",
+                        "model_name",
+                        "rejection_category",
+                        "n_samples",
+                        "directional_accuracy",
+                        "tc_adjusted_return",
+                        "max_drawdown",
+                        "bootstrap_ci_low",
+                        "permutation_p_value",
+                        "rejection_reason",
+                        "drilldown_note",
+                    ]
+                ].style.format(
+                    {
+                        "directional_accuracy": "{:.1%}",
+                        "tc_adjusted_return": "{:.1%}",
+                        "max_drawdown": "{:.1%}",
+                        "bootstrap_ci_low": "{:.1%}",
+                        "permutation_p_value": "{:.3f}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
 
     st.subheader("Feature Group Ablation")
     ablation_30 = feature_ablation[(feature_ablation["horizon"] == 30) & (feature_ablation["window_type"] == "official_monthly")]

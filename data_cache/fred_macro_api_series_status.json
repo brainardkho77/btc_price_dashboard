@@ -75,9 +75,9 @@
     "series_id": "STLFSI4",
     "series_name": "financial_stress_index",
     "status": "worked",
-    "rows": 643,
+    "rows": 644,
     "first_date": "2014-01-03",
-    "last_date": "2026-04-24",
+    "last_date": "2026-05-01",
     "failure_reason": ""
   },
   {

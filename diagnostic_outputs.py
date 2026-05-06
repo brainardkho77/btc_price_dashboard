@@ -2860,6 +2860,438 @@ def fred_vs_fallback_summary(
     )
 
 
+SOL_SELECTION_AUDIT_PAIRS = [
+    ("all_features", "logistic_linear"),
+    ("price_plus_risk_assets", "logistic_linear"),
+    ("sol_dollar_rates_only", "random_forest"),
+    ("price_plus_macro", "logistic_linear"),
+    ("sol_price_plus_ecosystem", "logistic_linear"),
+]
+
+BTC_NO_EDGE_DRILLDOWN_PAIRS = [
+    ("price_plus_stablecoins", "logistic_linear"),
+    ("btc_dollar_rates_cycle", "logistic_linear"),
+    ("price_plus_dollar_rates", "logistic_linear"),
+]
+
+
+def _bool_value(value) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value) if pd.notna(value) else False
+
+
+def _reference_feature_row(asset_feature_sets: pd.DataFrame, model_name: str = "logistic_linear") -> dict:
+    if asset_feature_sets.empty:
+        return {}
+    official = asset_feature_sets[
+        (asset_feature_sets["horizon"] == 30)
+        & (asset_feature_sets["window_type"] == "official_monthly")
+        & (asset_feature_sets["candidate_feature_set"] == "all_features")
+    ].copy()
+    preferred = official[official["model_name"].astype(str).eq(model_name)]
+    if not preferred.empty:
+        return preferred.iloc[0].to_dict()
+    if official.empty:
+        return {}
+    return (
+        official.sort_values(
+            ["directional_accuracy", "brier_score", "net_return", "max_drawdown", "calibration_error"],
+            ascending=[False, True, False, False, True],
+            na_position="last",
+        )
+        .iloc[0]
+        .to_dict()
+    )
+
+
+def _candidate_lookup(asset_feature_sets: pd.DataFrame, candidate_name: str, model_name: str) -> pd.DataFrame:
+    if asset_feature_sets.empty:
+        return pd.DataFrame()
+    return asset_feature_sets[
+        (asset_feature_sets["horizon"] == 30)
+        & (asset_feature_sets["window_type"] == "official_monthly")
+        & (asset_feature_sets["candidate_feature_set"].astype(str) == candidate_name)
+        & (asset_feature_sets["model_name"].astype(str) == model_name)
+    ].head(1)
+
+
+def sol_selection_audit(run_id: str, asset_feature_sets: pd.DataFrame) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "sol":
+        return empty_diagnostic_frame("sol_selection_audit.csv")
+    reference = _reference_feature_row(asset_feature_sets, "logistic_linear")
+    reference_acc = float(reference.get("directional_accuracy", np.nan)) if reference else np.nan
+    reference_return = float(reference.get("net_return", np.nan)) if reference else np.nan
+    rows = []
+    for candidate_name, model_name in SOL_SELECTION_AUDIT_PAIRS:
+        candidate = _candidate_lookup(asset_feature_sets, candidate_name, model_name)
+        if candidate.empty:
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "horizon": 30,
+                    "window_type": "official_monthly",
+                    "candidate_feature_set": candidate_name,
+                    "model_name": model_name,
+                    "audit_role": "missing_challenger",
+                    "n_samples": 0,
+                    "directional_accuracy": np.nan,
+                    "brier_score": np.nan,
+                    "calibration_error": np.nan,
+                    "tc_adjusted_return": np.nan,
+                    "max_drawdown": np.nan,
+                    "bootstrap_ci_low": np.nan,
+                    "permutation_p_value": np.nan,
+                    "beats_current_reference": False,
+                    "accuracy_delta_vs_reference": np.nan,
+                    "return_delta_vs_reference": np.nan,
+                    "promotion_eligible": False,
+                    "reliability_label": "Low confidence",
+                    "rejection_reason": "candidate_not_available",
+                    "audit_conclusion": "missing",
+                    "notes": "Requested SOL audit candidate did not produce a precomputed official 30d row.",
+                }
+            )
+            continue
+        row = candidate.iloc[0]
+        acc = row.get("directional_accuracy", np.nan)
+        net_return = row.get("net_return", np.nan)
+        acc_delta = float(acc) - reference_acc if pd.notna(acc) and pd.notna(reference_acc) else np.nan
+        return_delta = float(net_return) - reference_return if pd.notna(net_return) and pd.notna(reference_return) else np.nan
+        promoted = _bool_value(row.get("promotion_eligible", False))
+        beats_reference = _bool_value(row.get("beats_current_reference", False))
+        reason = str(row.get("rejection_reason", ""))
+        if candidate_name == "all_features" and model_name == "logistic_linear":
+            conclusion = "current_official_reference"
+            notes = "Reference selected SOL model. Challengers must improve accuracy and after-cost return without worse quality or stability."
+        elif promoted:
+            conclusion = "promotion_candidate"
+            notes = "Candidate passed current promotion rules; review before changing selected feature set."
+        elif pd.notna(acc_delta) and acc_delta > 0 and pd.notna(return_delta) and return_delta < 0:
+            conclusion = "higher_accuracy_but_lower_after_cost_return"
+            notes = "Higher directional accuracy did not translate into better after-cost return versus the official reference."
+        elif pd.notna(acc_delta) and acc_delta >= 0 and not beats_reference:
+            conclusion = "accuracy_not_enough_without_reference_improvement"
+            notes = "Accuracy matched or improved, but the current reference comparison gate still failed."
+        elif "materially_worsened" in reason:
+            conclusion = "rejected_quality_tradeoff"
+            notes = "Rejected because calibration, Brier score, or drawdown worsened beyond the materiality rule."
+        else:
+            conclusion = "rejected_under_current_gates"
+            notes = "Candidate did not clear the official 30d promotion gates."
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "horizon": int(row.get("horizon", 30)),
+                "window_type": row.get("window_type", "official_monthly"),
+                "candidate_feature_set": candidate_name,
+                "model_name": model_name,
+                "audit_role": "current_reference" if candidate_name == "all_features" and model_name == "logistic_linear" else "challenger",
+                "n_samples": int(row.get("n_samples", 0) or 0),
+                "directional_accuracy": acc,
+                "brier_score": row.get("brier_score", np.nan),
+                "calibration_error": row.get("calibration_error", np.nan),
+                "tc_adjusted_return": net_return,
+                "max_drawdown": row.get("max_drawdown", np.nan),
+                "bootstrap_ci_low": row.get("bootstrap_ci_low", np.nan),
+                "permutation_p_value": row.get("permutation_p_value", np.nan),
+                "beats_current_reference": beats_reference,
+                "accuracy_delta_vs_reference": acc_delta,
+                "return_delta_vs_reference": return_delta,
+                "promotion_eligible": promoted,
+                "reliability_label": row.get("reliability_label", "Low confidence"),
+                "rejection_reason": reason,
+                "audit_conclusion": conclusion,
+                "notes": notes,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def sol_signal_policy_deployment_check(
+    run_id: str,
+    signal_policy: pd.DataFrame,
+    latest_interpretation: pd.DataFrame,
+) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "sol":
+        return empty_diagnostic_frame("sol_signal_policy_deployment.csv")
+    candidate_name = "sol_price_plus_ecosystem"
+    model_name = "logistic_linear"
+    policy = signal_policy[
+        (signal_policy["candidate_feature_set"].astype(str) == candidate_name)
+        & (signal_policy["model_name"].astype(str) == model_name)
+        & (signal_policy["horizon"] == 30)
+        & (signal_policy["window_type"] == "official_monthly")
+    ].head(1) if not signal_policy.empty else pd.DataFrame()
+    interp = latest_interpretation.head(1)
+    interp_row = interp.iloc[0] if not interp.empty else pd.Series(dtype=object)
+    selected_model = str(interp_row.get("selected_model", ""))
+    if policy.empty:
+        return pd.DataFrame(
+            [
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "candidate_feature_set": candidate_name,
+                    "model_name": model_name,
+                    "n_samples": 0,
+                    "active_signal_count": 0,
+                    "active_coverage": 0.0,
+                    "active_hit_rate": np.nan,
+                    "missed_up_month_rate": np.nan,
+                    "after_cost_return": np.nan,
+                    "max_drawdown": np.nan,
+                    "bootstrap_ci_low": np.nan,
+                    "permutation_p_value": np.nan,
+                    "valid_signal_policy": False,
+                    "promoted_signal_policy": False,
+                    "enough_active_signals": False,
+                    "high_confidence_active_floor_met": False,
+                    "deployment_role": "unavailable",
+                    "latest_strategy_action": str(interp_row.get("strategy_action", "cash")),
+                    "latest_risk_label": str(interp_row.get("risk_label", "Neutral / no edge")),
+                    "selected_model": selected_model,
+                    "can_change_selected_model": False,
+                    "audit_conclusion": "policy_candidate_not_available",
+                }
+            ]
+        )
+    row = policy.iloc[0]
+    n_samples = int(row.get("n_samples", 0) or 0)
+    active_count = int(row.get("active_signal_count", 0) or 0)
+    enough_active = active_count >= active_signal_floor(n_samples)
+    high_floor = active_count >= high_confidence_signal_floor(n_samples)
+    promoted = _bool_value(row.get("promoted_signal_policy", False))
+    valid = _bool_value(row.get("valid_signal_policy", False))
+    if promoted and enough_active and not high_floor:
+        conclusion = "useful_interpretation_limited_active_support"
+        role = "diagnostic_interpretation_layer"
+    elif promoted and high_floor:
+        conclusion = "policy_has_stronger_active_support_but_cannot_promote_model"
+        role = "diagnostic_interpretation_layer"
+    elif valid:
+        conclusion = "valid_but_not_statistically_promoted"
+        role = "diagnostic_only"
+    else:
+        conclusion = "not_deployable_policy"
+        role = "diagnostic_only"
+    return pd.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "candidate_feature_set": candidate_name,
+                "model_name": model_name,
+                "n_samples": n_samples,
+                "active_signal_count": active_count,
+                "active_coverage": row.get("active_coverage", np.nan),
+                "active_hit_rate": row.get("active_hit_rate", np.nan),
+                "missed_up_month_rate": row.get("missed_up_month_rate", np.nan),
+                "after_cost_return": row.get("after_cost_return", np.nan),
+                "max_drawdown": row.get("max_drawdown", np.nan),
+                "bootstrap_ci_low": row.get("bootstrap_ci_low", np.nan),
+                "permutation_p_value": row.get("permutation_p_value", np.nan),
+                "valid_signal_policy": valid,
+                "promoted_signal_policy": promoted,
+                "enough_active_signals": enough_active,
+                "high_confidence_active_floor_met": high_floor,
+                "deployment_role": role,
+                "latest_strategy_action": str(interp_row.get("strategy_action", "cash")),
+                "latest_risk_label": str(interp_row.get("risk_label", "Neutral / no edge")),
+                "selected_model": selected_model,
+                "can_change_selected_model": False,
+                "audit_conclusion": conclusion,
+            }
+        ]
+    )
+
+
+def _btc_rejection_category(row: pd.Series, reference: dict) -> Tuple[str, str]:
+    acc = row.get("directional_accuracy", np.nan)
+    net_return = row.get("net_return", np.nan)
+    ref_return = reference.get("net_return", reference.get("tc_adjusted_return", np.nan))
+    material_bad = _bool_value(row.get("material_worsening", False))
+    regime_ok = _bool_value(row.get("regime_stability_pass", False))
+    ci_low = row.get("bootstrap_ci_low", np.nan)
+    p_value = row.get("permutation_p_value", np.nan)
+    stability_failed = bool(not (pd.notna(ci_low) and float(ci_low) > 0.50 and pd.notna(p_value) and float(p_value) <= 0.10) or not regime_ok)
+    high_return = bool(pd.notna(net_return) and ((pd.notna(ref_return) and float(net_return) > float(ref_return)) or float(net_return) > 0))
+    if high_return and material_bad and pd.notna(ref_return) and float(net_return) > float(ref_return):
+        return (
+            "high_return_but_poor_calibration_or_drawdown",
+            "After-cost return is attractive, but quality or drawdown worsened and stability gates did not clear.",
+        )
+    if pd.notna(acc) and float(acc) >= 0.55 and stability_failed:
+        return (
+            "promising_but_statistically_unstable",
+            "Directional accuracy is interesting, but bootstrap, permutation, or regime stability evidence is insufficient.",
+        )
+    return (
+        "genuinely_noisy",
+        "Candidate does not provide enough stable incremental evidence versus baselines and the current reference.",
+    )
+
+
+def btc_no_edge_drilldown(run_id: str, asset_feature_sets: pd.DataFrame) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "btc":
+        return empty_diagnostic_frame("btc_no_edge_drilldown.csv")
+    reference = _reference_feature_row(asset_feature_sets)
+    rows = []
+    for candidate_name, model_name in BTC_NO_EDGE_DRILLDOWN_PAIRS:
+        candidate = _candidate_lookup(asset_feature_sets, candidate_name, model_name)
+        if candidate.empty:
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "candidate_feature_set": candidate_name,
+                    "model_name": model_name,
+                    "n_samples": 0,
+                    "directional_accuracy": np.nan,
+                    "brier_score": np.nan,
+                    "calibration_error": np.nan,
+                    "tc_adjusted_return": np.nan,
+                    "max_drawdown": np.nan,
+                    "bootstrap_ci_low": np.nan,
+                    "permutation_p_value": np.nan,
+                    "beats_buy_hold": False,
+                    "beats_momentum_30d": False,
+                    "beats_momentum_90d": False,
+                    "beats_random_baseline": False,
+                    "beats_current_reference": False,
+                    "material_worsening": False,
+                    "regime_stability_pass": False,
+                    "promotion_eligible": False,
+                    "reliability_label": "Low confidence",
+                    "rejection_category": "missing",
+                    "rejection_reason": "candidate_not_available",
+                    "drilldown_note": "Requested BTC drilldown candidate did not produce a precomputed official 30d row.",
+                }
+            )
+            continue
+        row = candidate.iloc[0]
+        category, note = _btc_rejection_category(row, reference)
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "candidate_feature_set": candidate_name,
+                "model_name": model_name,
+                "n_samples": int(row.get("n_samples", 0) or 0),
+                "directional_accuracy": row.get("directional_accuracy", np.nan),
+                "brier_score": row.get("brier_score", np.nan),
+                "calibration_error": row.get("calibration_error", np.nan),
+                "tc_adjusted_return": row.get("net_return", np.nan),
+                "max_drawdown": row.get("max_drawdown", np.nan),
+                "bootstrap_ci_low": row.get("bootstrap_ci_low", np.nan),
+                "permutation_p_value": row.get("permutation_p_value", np.nan),
+                "beats_buy_hold": _bool_value(row.get("beats_buy_hold", False)),
+                "beats_momentum_30d": _bool_value(row.get("beats_momentum_30d", False)),
+                "beats_momentum_90d": _bool_value(row.get("beats_momentum_90d", False)),
+                "beats_random_baseline": _bool_value(row.get("beats_random_baseline", False)),
+                "beats_current_reference": _bool_value(row.get("beats_current_reference", False)),
+                "material_worsening": _bool_value(row.get("material_worsening", False)),
+                "regime_stability_pass": _bool_value(row.get("regime_stability_pass", False)),
+                "promotion_eligible": _bool_value(row.get("promotion_eligible", False)),
+                "reliability_label": row.get("reliability_label", "Low confidence"),
+                "rejection_category": category,
+                "rejection_reason": row.get("rejection_reason", ""),
+                "drilldown_note": note,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def write_edge_validation_report(output_dir: Path) -> Optional[Path]:
+    manifest_path = output_dir / "run_manifest.json"
+    if not manifest_path.exists():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    asset_id = str(manifest.get("asset_id", "")).lower()
+    latest = _read_optional_csv(output_dir / "latest_forecast.csv")
+    fred = _read_optional_csv(output_dir / "csv" / "fred_macro_impact_report.csv")
+    primary = latest[latest["is_primary_objective"] == True].head(1) if not latest.empty else pd.DataFrame()
+    primary_row = primary.iloc[0] if not primary.empty else pd.Series(dtype=object)
+    lines = [
+        "# SOL Edge Validation + BTC No-Edge Drilldown",
+        "",
+        "## Run Summary",
+        f"- Run ID: `{manifest.get('run_id')}`",
+        f"- Asset: `{manifest.get('asset_name') or asset_id}`",
+        f"- Selected model: `{primary_row.get('selected_model', '')}`",
+        f"- Signal: `{primary_row.get('signal', '')}`",
+        f"- Reliability: `{primary_row.get('reliability_label', '')}`",
+    ]
+    if asset_id == "sol":
+        audit = _read_optional_csv(output_dir / "csv" / "sol_selection_audit.csv")
+        policy = _read_optional_csv(output_dir / "csv" / "sol_signal_policy_deployment.csv")
+        lines.extend(["", "## SOL Selection Audit"])
+        if audit.empty:
+            lines.append("- SOL selection audit was unavailable.")
+        else:
+            for _, row in audit.iterrows():
+                lines.append(
+                    f"- `{row['candidate_feature_set']}` / `{row['model_name']}`: accuracy `{_fmt_pct(row['directional_accuracy'])}`, "
+                    f"after-cost return `{_fmt_pct(row['tc_adjusted_return'])}`, conclusion `{row['audit_conclusion']}`."
+                )
+        lines.extend(["", "## SOL Signal Policy Deployment Check"])
+        if policy.empty:
+            lines.append("- SOL policy deployment check was unavailable.")
+        else:
+            row = policy.iloc[0]
+            lines.append(
+                f"- `{row['candidate_feature_set']}` / `{row['model_name']}` has `{int(row['active_signal_count'])}` active signals, "
+                f"hit rate `{_fmt_pct(row['active_hit_rate'])}`, after-cost return `{_fmt_pct(row['after_cost_return'])}`."
+            )
+            lines.append(f"- Deployment role: `{row['deployment_role']}`. Conclusion: `{row['audit_conclusion']}`.")
+            lines.append("- The signal policy remains an interpretation layer; it cannot change `selected_model`.")
+    if asset_id == "btc":
+        drilldown = _read_optional_csv(output_dir / "csv" / "btc_no_edge_drilldown.csv")
+        lines.extend(["", "## BTC No-Edge Drilldown"])
+        if drilldown.empty:
+            lines.append("- BTC no-edge drilldown was unavailable.")
+        else:
+            for _, row in drilldown.iterrows():
+                lines.append(
+                    f"- `{row['candidate_feature_set']}` / `{row['model_name']}`: category `{row['rejection_category']}`, "
+                    f"accuracy `{_fmt_pct(row['directional_accuracy'])}`, CI low `{_fmt_pct(row['bootstrap_ci_low'])}`, "
+                    f"p-value `{_fmt_num(row['permutation_p_value'], 3)}`."
+                )
+                lines.append(f"  Rejection: `{row['rejection_reason']}`.")
+    if not fred.empty:
+        t10yie = fred[fred["series_id"].astype(str).eq("T10YIE")].head(1)
+        lines.extend(["", "## FRED Follow-Up"])
+        if t10yie.empty:
+            lines.append("- `T10YIE` was not present in the FRED impact report.")
+        else:
+            row = t10yie.iloc[0]
+            if row["source_status"] == "worked":
+                lines.append("- `T10YIE` worked on this refresh.")
+            else:
+                lines.append(
+                    f"- `T10YIE` status is `{row['source_status']}`. This is treated as a data-source issue, not a model issue."
+                )
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "- No new model family or paid data source was introduced.",
+            "- Polymarket remains diagnostic-only.",
+            "- BTC remains neutral unless a candidate passes all official gates naturally.",
+        ]
+    )
+    path = output_dir / "edge_validation_report.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def latest_signal_interpretation_frame(
     run_id: str,
     generated_at: str,
@@ -3702,12 +4134,20 @@ def write_diagnostics(
         "fred_macro_impact_report.csv": fred_impact_frame,
         "macro_candidate_impact_report.csv": macro_candidate_frame,
         "fred_vs_fallback_summary.csv": fred_summary_frame,
+        "sol_selection_audit.csv": sol_selection_audit(run_id, asset_policy["asset_feature_set_leaderboard.csv"]),
+        "sol_signal_policy_deployment.csv": sol_signal_policy_deployment_check(
+            run_id,
+            asset_policy["signal_policy_report.csv"],
+            latest_interpretation,
+        ),
+        "btc_no_edge_drilldown.csv": btc_no_edge_drilldown(run_id, asset_policy["asset_feature_set_leaderboard.csv"]),
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)
     write_full_refresh_diagnostics_report(output_dir, baseline_dir)
     write_derivatives_recovery_report(output_dir)
     write_feature_pruning_summary(output_dir)
+    write_edge_validation_report(output_dir)
     returned = dict(diagnostics)
     returned["latest_signal_interpretation.csv"] = latest_interpretation
     return returned

@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `sol_research_20260506T132122Z`
+- Full refresh run ID: `sol_research_20260506T171530Z`
 - Selected model: `logistic_linear`
 - Signal: `neutral`
 - Reliability: `Medium confidence`
@@ -17,7 +17,7 @@ Quick mode used `2020-04-10` to `2026-05-04` with `48` 30d official samples and 
 
 Validation gates failed by ML model:
 - `logistic_linear`: selected_model
-- `hgb`: did_not_beat_90d_momentum; did_not_beat_random_baseline; failed_transaction_cost_check; low_reliability
+- `hgb`: did_not_beat_90d_momentum; did_not_beat_random_baseline; failed_transaction_cost_check; failed_calibration_check; low_reliability
 - `random_forest`: not_selected_by_primary_30d_rules
 
 ## Feature Group Findings
@@ -27,10 +27,10 @@ Validation gates failed by ML model:
 - `sol_ecosystem_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `1124.4%`, reliability `Medium confidence`
 - `sol_ecosystem_only` / `logistic_linear`: samples `36`, accuracy `66.7%`, net return `957.8%`, reliability `Medium confidence`
 - `price_momentum_only` / `logistic_linear`: samples `36`, accuracy `66.7%`, net return `544.6%`, reliability `Medium confidence`
-- `risk_assets_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `1182.3%`, reliability `Medium confidence`
+- `risk_assets_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `924.3%`, reliability `Medium confidence`
+- `risk_assets_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `824.7%`, reliability `Medium confidence`
 - `dollar_rates_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `1044.9%`, reliability `Medium confidence`
 - `macro_liquidity_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `644.6%`, reliability `Medium confidence`
-- `risk_assets_only` / `logistic_linear`: samples `36`, accuracy `63.9%`, net return `671.4%`, reliability `Medium confidence`
 
 ## Feature Group Watchlist
 - `dollar_rates_only` / `logistic_linear`: samples `36`, accuracy `63.9%`, Sharpe `1.28`, max drawdown `-37.4%`, Brier `0.256`, calibration error `0.105`, beats buy-hold `True`, beats momentum `True`.

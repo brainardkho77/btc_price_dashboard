@@ -342,20 +342,30 @@ def fetch_fred_api_series(series_id: str, start: str = "2014-01-01") -> pd.Serie
     api_key = fred_api_key()
     if not api_key:
         raise DataSourceError("FRED_API_KEY is not set.")
-    response = requests.get(
-        "https://api.stlouisfed.org/fred/series/observations",
-        params={
-            "series_id": series_id,
-            "file_type": "json",
-            "observation_start": start,
-            "api_key": api_key,
-        },
-        headers={
-            "User-Agent": USER_AGENT,
-            "Authorization": f"Bearer {api_key}",
-        },
-        timeout=30,
-    )
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    params = {
+        "series_id": series_id,
+        "file_type": "json",
+        "observation_start": start,
+        "api_key": api_key,
+    }
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Authorization": f"Bearer {api_key}",
+    }
+    last_status = None
+    for attempt in range(3):
+        response = requests.get(url, params=params, headers=headers, timeout=45)
+        last_status = response.status_code
+        if response.status_code not in {429, 500, 502, 503, 504}:
+            break
+        if attempt < 2:
+            retry_after = getattr(response, "headers", {}).get("Retry-After")
+            sleep_seconds = float(retry_after) if retry_after and retry_after.replace(".", "", 1).isdigit() else min(8, 2 ** attempt)
+            time.sleep(sleep_seconds)
+    else:
+        raise DataSourceError(f"FRED API request failed for {series_id} with HTTP {last_status}.")
+
     if response.status_code >= 400:
         raise DataSourceError(f"FRED API request failed for {series_id} with HTTP {response.status_code}.")
     payload = response.json()

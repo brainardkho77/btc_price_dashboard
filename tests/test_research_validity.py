@@ -35,6 +35,7 @@ from diagnostic_outputs import (
     _material_worsening,
     active_signal_floor,
     asset_feature_set_and_policy_diagnostics,
+    btc_no_edge_drilldown,
     candidate_feature_sets,
     derivatives_coverage,
     feature_pruning_report,
@@ -46,6 +47,8 @@ from diagnostic_outputs import (
     latest_signal_interpretation_frame,
     macro_candidate_impact_report,
     select_nested_pruned_features,
+    sol_selection_audit,
+    sol_signal_policy_deployment_check,
     sol_stability_candidate_pairs,
 )
 from schemas import DIAGNOSTIC_OUTPUT_SCHEMAS, OUTPUT_SCHEMAS, empty_diagnostic_frame, empty_output_frame, validate_frame
@@ -339,6 +342,9 @@ def test_diagnostic_schemas_include_required_outputs():
         "fred_macro_impact_report.csv",
         "macro_candidate_impact_report.csv",
         "fred_vs_fallback_summary.csv",
+        "sol_selection_audit.csv",
+        "sol_signal_policy_deployment.csv",
+        "btc_no_edge_drilldown.csv",
     ]:
         assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
     assert "latest_signal_interpretation.csv" in OUTPUT_SCHEMAS
@@ -356,6 +362,9 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "series_id" in DIAGNOSTIC_OUTPUT_SCHEMAS["fred_macro_impact_report.csv"]
     assert "tc_adjusted_return" in DIAGNOSTIC_OUTPUT_SCHEMAS["macro_candidate_impact_report.csv"]
     assert "accuracy_delta" in DIAGNOSTIC_OUTPUT_SCHEMAS["fred_vs_fallback_summary.csv"]
+    assert "audit_conclusion" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_selection_audit.csv"]
+    assert "can_change_selected_model" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_signal_policy_deployment.csv"]
+    assert "rejection_category" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_no_edge_drilldown.csv"]
 
 
 def test_btc_up_down_slice_creation_uses_known_btc_history():
@@ -476,6 +485,232 @@ def test_macro_candidate_and_fred_summary_reports_validate_without_baseline(tmp_
     assert summary.iloc[0]["notes"] == "baseline_unavailable"
 
 
+def test_sol_selection_audit_explains_higher_accuracy_rejection():
+    rows = pd.DataFrame(
+        [
+            {
+                "run_id": "sol_research_test",
+                "asset_id": "sol",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "all_features",
+                "model_name": "logistic_linear",
+                "feature_selection_method": "all_features_reference",
+                "n_features": 100,
+                "n_samples": 36,
+                "directional_accuracy": 0.694,
+                "balanced_accuracy": 0.694,
+                "brier_score": 0.25,
+                "calibration_error": 0.11,
+                "sharpe": 1.1,
+                "max_drawdown": -0.37,
+                "net_return": 9.80,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": True,
+                "beats_random_baseline": True,
+                "beats_current_reference": False,
+                "material_worsening": False,
+                "regime_stability_pass": False,
+                "bootstrap_ci_low": np.nan,
+                "bootstrap_ci_high": np.nan,
+                "permutation_p_value": np.nan,
+                "promotion_eligible": False,
+                "reliability_label": "Medium confidence",
+                "window_fingerprint": "",
+                "rejection_reason": "current_all_features_reference",
+            },
+            {
+                "run_id": "sol_research_test",
+                "asset_id": "sol",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "price_plus_risk_assets",
+                "model_name": "logistic_linear",
+                "feature_selection_method": "nested_train_only_pruned",
+                "n_features": 20,
+                "n_samples": 36,
+                "directional_accuracy": 0.722,
+                "balanced_accuracy": 0.722,
+                "brier_score": 0.23,
+                "calibration_error": 0.08,
+                "sharpe": 1.2,
+                "max_drawdown": -0.23,
+                "net_return": 9.50,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": True,
+                "beats_random_baseline": True,
+                "beats_current_reference": False,
+                "material_worsening": False,
+                "regime_stability_pass": True,
+                "bootstrap_ci_low": 0.58,
+                "bootstrap_ci_high": 0.86,
+                "permutation_p_value": 0.02,
+                "promotion_eligible": False,
+                "reliability_label": "Medium confidence",
+                "window_fingerprint": "abc",
+                "rejection_reason": "did_not_improve_current_all_features_reference",
+            },
+        ]
+    )
+    audit = sol_selection_audit("sol_research_test", rows)
+    validate_frame("sol_selection_audit.csv", audit)
+    challenger = audit[audit["candidate_feature_set"] == "price_plus_risk_assets"].iloc[0]
+    assert challenger["audit_conclusion"] == "higher_accuracy_but_lower_after_cost_return"
+    assert challenger["accuracy_delta_vs_reference"] > 0
+    assert challenger["return_delta_vs_reference"] < 0
+
+
+def test_sol_signal_policy_deployment_cannot_change_model_and_flags_limited_support():
+    policy = pd.DataFrame(
+        [
+            {
+                "run_id": "sol_research_test",
+                "asset_id": "sol",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "sol_price_plus_ecosystem",
+                "model_name": "logistic_linear",
+                "n_samples": 36,
+                "policy_source": "train_calibration_only",
+                "long_threshold_median": 0.55,
+                "expected_return_min_median": 0.0,
+                "threshold_050_used": False,
+                "threshold_050_diagnostic_only": True,
+                "active_signal_count": 12,
+                "active_coverage": 0.333,
+                "abstention_rate": 0.667,
+                "active_hit_rate": 0.75,
+                "missed_up_month_rate": 0.5,
+                "after_cost_return": 2.55,
+                "max_drawdown": -0.20,
+                "bootstrap_ci_low": 0.52,
+                "bootstrap_ci_high": 0.92,
+                "permutation_p_value": 0.04,
+                "risk_off_count": 8,
+                "risk_off_rate": 0.22,
+                "risk_off_hit_rate": 0.60,
+                "risk_off_avg_return": -0.05,
+                "risk_off_probability_threshold_median": 0.45,
+                "valid_signal_policy": True,
+                "high_confidence_policy_eligible": False,
+                "promoted_signal_policy": True,
+                "rejection_reason": "promotion_eligible",
+            }
+        ]
+    )
+    latest_interp = pd.DataFrame(
+        [
+            {
+                "selected_model": "logistic_linear",
+                "strategy_action": "cash",
+                "risk_label": "Neutral / no edge",
+            }
+        ]
+    )
+    report = sol_signal_policy_deployment_check("sol_research_test", policy, latest_interp)
+    validate_frame("sol_signal_policy_deployment.csv", report)
+    row = report.iloc[0]
+    assert bool(row["can_change_selected_model"]) is False
+    assert bool(row["enough_active_signals"]) is True
+    assert bool(row["high_confidence_active_floor_met"]) is False
+    assert row["audit_conclusion"] == "useful_interpretation_limited_active_support"
+
+
+def test_btc_no_edge_drilldown_classifies_target_candidates():
+    rows = pd.DataFrame(
+        [
+            {
+                "run_id": "btc_research_test",
+                "asset_id": "btc",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "all_features",
+                "model_name": "hgb",
+                "n_samples": 100,
+                "directional_accuracy": 0.55,
+                "brier_score": 0.25,
+                "calibration_error": 0.09,
+                "net_return": 11.0,
+                "max_drawdown": -0.42,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": False,
+                "beats_random_baseline": True,
+                "beats_current_reference": False,
+                "material_worsening": False,
+                "regime_stability_pass": False,
+                "bootstrap_ci_low": np.nan,
+                "bootstrap_ci_high": np.nan,
+                "permutation_p_value": np.nan,
+                "promotion_eligible": False,
+                "reliability_label": "Low confidence",
+                "rejection_reason": "current_all_features_reference",
+            },
+            {
+                "run_id": "btc_research_test",
+                "asset_id": "btc",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "price_plus_stablecoins",
+                "model_name": "logistic_linear",
+                "n_samples": 100,
+                "directional_accuracy": 0.57,
+                "brier_score": 0.24,
+                "calibration_error": 0.08,
+                "net_return": 13.0,
+                "max_drawdown": -0.54,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": True,
+                "beats_random_baseline": True,
+                "beats_current_reference": True,
+                "material_worsening": True,
+                "regime_stability_pass": False,
+                "bootstrap_ci_low": 0.47,
+                "bootstrap_ci_high": 0.66,
+                "permutation_p_value": 0.11,
+                "promotion_eligible": False,
+                "reliability_label": "Medium confidence",
+                "rejection_reason": "materially_worsened_brier_calibration_or_drawdown; failed_regime_stability_check",
+            },
+            {
+                "run_id": "btc_research_test",
+                "asset_id": "btc",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "btc_dollar_rates_cycle",
+                "model_name": "logistic_linear",
+                "n_samples": 100,
+                "directional_accuracy": 0.56,
+                "brier_score": 0.24,
+                "calibration_error": 0.13,
+                "net_return": 10.8,
+                "max_drawdown": -0.42,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": True,
+                "beats_random_baseline": True,
+                "beats_current_reference": False,
+                "material_worsening": True,
+                "regime_stability_pass": True,
+                "bootstrap_ci_low": 0.46,
+                "bootstrap_ci_high": 0.67,
+                "permutation_p_value": 0.15,
+                "promotion_eligible": False,
+                "reliability_label": "Medium confidence",
+                "rejection_reason": "failed_bootstrap_or_permutation_stability_check",
+            },
+        ]
+    )
+    report = btc_no_edge_drilldown("btc_research_test", rows)
+    validate_frame("btc_no_edge_drilldown.csv", report)
+    categories = dict(zip(report["candidate_feature_set"], report["rejection_category"]))
+    assert categories["price_plus_stablecoins"] == "high_return_but_poor_calibration_or_drawdown"
+    assert categories["btc_dollar_rates_cycle"] == "promising_but_statistically_unstable"
+
+
 def test_sol_stability_report_candidate_pairs_include_selected_model():
     pairs = sol_stability_candidate_pairs("sol")
     assert ("all_features", "random_forest") in pairs
@@ -570,6 +805,9 @@ def test_streamlit_optional_new_diagnostics_can_be_empty_with_schema():
         "fred_macro_impact_report.csv",
         "macro_candidate_impact_report.csv",
         "fred_vs_fallback_summary.csv",
+        "sol_selection_audit.csv",
+        "sol_signal_policy_deployment.csv",
+        "btc_no_edge_drilldown.csv",
     ]:
         frame = empty_diagnostic_frame(filename)
         validate_frame(filename, frame)

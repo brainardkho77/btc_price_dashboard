@@ -26,8 +26,10 @@ from data_sources import (
     fetch_coinmetrics,
     fetch_fear_greed,
     fetch_fred,
+    fetch_fred_api,
     fetch_market_proxies,
     fetch_yahoo_chart,
+    fred_api_key_configured,
 )
 from features import make_features
 from research_config import (
@@ -133,6 +135,26 @@ MANUAL_DERIVATIVE_SPECS: Dict[str, ManualDerivativeSpec] = {
         required_columns=("date", "long_short_ratio"),
         rename_map={
             "long_short_ratio": "binance_long_short_ratio",
+        },
+        positive_columns=("long_short_ratio",),
+    ),
+    "binance_top_trader_account_ratio": ManualDerivativeSpec(
+        dataset="binance_top_trader_account_ratio",
+        metric="top_trader_account_ratio",
+        filename="btc_top_trader_account_ratio.csv",
+        required_columns=("date", "long_short_ratio"),
+        rename_map={
+            "long_short_ratio": "binance_top_trader_account_long_short_ratio",
+        },
+        positive_columns=("long_short_ratio",),
+    ),
+    "binance_top_trader_position_ratio": ManualDerivativeSpec(
+        dataset="binance_top_trader_position_ratio",
+        metric="top_trader_position_ratio",
+        filename="btc_top_trader_position_ratio.csv",
+        required_columns=("date", "long_short_ratio"),
+        rename_map={
+            "long_short_ratio": "binance_top_trader_position_long_short_ratio",
         },
         positive_columns=("long_short_ratio",),
     ),
@@ -760,6 +782,91 @@ def fetch_defillama_stablecoins() -> pd.DataFrame:
     return _write_cached_dataset("defillama_stablecoins", frame)
 
 
+def _defillama_chart_frame(
+    *,
+    dataset: str,
+    endpoint: str,
+    output_column: str,
+    payload_key: str = "totalDataChart",
+) -> pd.DataFrame:
+    response = requests.get(endpoint, headers={"User-Agent": USER_AGENT}, timeout=45)
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get(payload_key) if isinstance(payload, dict) else payload
+    if not rows:
+        raise RuntimeError(f"DefiLlama returned no rows for {dataset}")
+    parsed = []
+    for row in rows:
+        if isinstance(row, dict):
+            date_value = row.get("date")
+            value = row.get("tvl") if "tvl" in row else row.get("value")
+        elif isinstance(row, (list, tuple)) and len(row) >= 2:
+            date_value, value = row[0], row[1]
+        else:
+            continue
+        if date_value is None:
+            continue
+        date = pd.to_datetime(int(date_value), unit="s", utc=True).tz_localize(None).normalize()
+        parsed.append({"date": date, output_column: value})
+    frame = pd.DataFrame(parsed)
+    if frame.empty:
+        raise RuntimeError(f"DefiLlama produced no parseable rows for {dataset}")
+    frame[output_column] = pd.to_numeric(frame[output_column], errors="coerce")
+    frame = frame.dropna(subset=[output_column]).drop_duplicates("date", keep="last").set_index("date").sort_index()
+    if frame.empty:
+        raise RuntimeError(f"DefiLlama produced no numeric rows for {dataset}")
+    return _write_cached_dataset(dataset, frame)
+
+
+def fetch_defillama_solana_stablecoins() -> pd.DataFrame:
+    response = requests.get(
+        "https://stablecoins.llama.fi/stablecoincharts/Solana",
+        headers={"User-Agent": USER_AGENT},
+        timeout=45,
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not rows:
+        raise RuntimeError("DefiLlama returned no Solana stablecoin rows")
+    parsed = []
+    for row in rows:
+        date = pd.to_datetime(int(row["date"]), unit="s", utc=True).tz_localize(None).normalize()
+        total = (row.get("totalCirculatingUSD") or {}).get("peggedUSD")
+        if total is None:
+            total = (row.get("totalCirculating") or {}).get("peggedUSD")
+        parsed.append({"date": date, "solana_stablecoin_circulating_usd": total})
+    frame = pd.DataFrame(parsed).set_index("date").sort_index()
+    frame["solana_stablecoin_circulating_usd"] = pd.to_numeric(frame["solana_stablecoin_circulating_usd"], errors="coerce")
+    frame = frame.dropna(subset=["solana_stablecoin_circulating_usd"])
+    if frame.empty:
+        raise RuntimeError("DefiLlama produced no numeric Solana stablecoin rows")
+    return _write_cached_dataset("defillama_solana_stablecoins", frame)
+
+
+def fetch_defillama_solana_tvl() -> pd.DataFrame:
+    return _defillama_chart_frame(
+        dataset="defillama_solana_tvl",
+        endpoint="https://api.llama.fi/v2/historicalChainTvl/Solana",
+        output_column="solana_tvl_usd",
+    )
+
+
+def fetch_defillama_solana_dex_volume() -> pd.DataFrame:
+    return _defillama_chart_frame(
+        dataset="defillama_solana_dex_volume",
+        endpoint="https://api.llama.fi/overview/dexs/Solana",
+        output_column="solana_dex_volume_usd",
+    )
+
+
+def fetch_defillama_solana_fees_revenue() -> pd.DataFrame:
+    return _defillama_chart_frame(
+        dataset="defillama_solana_fees_revenue",
+        endpoint="https://api.llama.fi/overview/fees/Solana",
+        output_column="solana_fees_revenue_usd",
+    )
+
+
 def _request_json_with_retries(endpoint: str, params: Optional[dict], *, attempts: int = 3, timeout: int = 25) -> object:
     last_error: Optional[Exception] = None
     for attempt in range(attempts):
@@ -1161,6 +1268,42 @@ def fetch_binance_long_short_ratio() -> pd.DataFrame:
     return _write_cached_dataset("binance_long_short_ratio", out.sort_index())
 
 
+def _fetch_binance_top_trader_ratio(dataset: str, endpoint: str, output_prefix: str) -> pd.DataFrame:
+    rows = _fetch_binance_chunked(
+        endpoint,
+        {"symbol": "BTCUSDT", "period": "1d"},
+        dataset=dataset,
+        recent_days=29,
+        chunk_days=7,
+        limit=500,
+    )
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        raise RuntimeError(f"Binance {dataset} returned no rows")
+    frame["date"] = pd.to_datetime(frame["timestamp"], unit="ms", utc=True).dt.tz_localize(None).dt.normalize()
+    out = pd.DataFrame(index=frame["date"])
+    out[f"binance_{output_prefix}_long_short_ratio"] = pd.to_numeric(frame.get("longShortRatio"), errors="coerce").to_numpy()
+    out[f"binance_{output_prefix}_long_account"] = pd.to_numeric(frame.get("longAccount"), errors="coerce").to_numpy()
+    out[f"binance_{output_prefix}_short_account"] = pd.to_numeric(frame.get("shortAccount"), errors="coerce").to_numpy()
+    return _write_cached_dataset(dataset, out.sort_index())
+
+
+def fetch_binance_top_trader_account_ratio() -> pd.DataFrame:
+    return _fetch_binance_top_trader_ratio(
+        "binance_top_trader_account_ratio",
+        "https://fapi.binance.com/futures/data/topLongShortAccountRatio",
+        "top_trader_account",
+    )
+
+
+def fetch_binance_top_trader_position_ratio() -> pd.DataFrame:
+    return _fetch_binance_top_trader_ratio(
+        "binance_top_trader_position_ratio",
+        "https://fapi.binance.com/futures/data/topLongShortPositionRatio",
+        "top_trader_position",
+    )
+
+
 def fetch_binance_taker_ratio() -> pd.DataFrame:
     rows = _fetch_binance_chunked(
         "https://fapi.binance.com/futures/data/takerlongshortRatio",
@@ -1323,12 +1466,80 @@ def load_research_data(
             "Polymarket monthly ladder data is loaded for diagnostics only; it is excluded from official model selection unless future validation gates pass."
         )
 
+    if fred_api_key_configured():
+        fred_api, record = _load_source(
+            run_id,
+            generated_at,
+            "fred_macro_api",
+            lambda: fetch_fred_api(force=refresh),
+            quick=quick and not refresh,
+            allow_quick_fetch=True,
+            source_specs=source_specs,
+        )
+        records.append(record)
+        if fred_api is not None and not fred_api.empty:
+            frames.append(fred_api)
+            records.append(
+                _availability_record(
+                    run_id,
+                    generated_at,
+                    _source_spec("fred_macro", source_specs),
+                    "skipped",
+                    failure_reason="Skipped because FRED API data was available.",
+                    used_override=False,
+                )
+            )
+        else:
+            fred_fallback, record = _load_source(
+                run_id,
+                generated_at,
+                "fred_macro",
+                lambda: fetch_fred(force=refresh),
+                quick=quick and not refresh,
+                allow_quick_fetch=True,
+                source_specs=source_specs,
+            )
+            records.append(record)
+            if fred_fallback is not None and not fred_fallback.empty:
+                frames.append(fred_fallback)
+    else:
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                _source_spec("fred_macro_api", source_specs),
+                "skipped",
+                failure_reason="FRED_API_KEY is not set; FRED API was not attempted.",
+                used_override=False,
+            )
+        )
+        fred_fallback, record = _load_source(
+            run_id,
+            generated_at,
+            "fred_macro",
+            lambda: fetch_fred(force=refresh),
+            quick=quick and not refresh,
+            allow_quick_fetch=True,
+            source_specs=source_specs,
+        )
+        records.append(record)
+        if fred_fallback is not None and not fred_fallback.empty:
+            frames.append(fred_fallback)
+
     loaders: List[Tuple[str, Callable[[], pd.DataFrame], bool]] = [
         ("yahoo_market_proxies", lambda: fetch_market_proxies(force=refresh), True),
-        ("fred_macro", lambda: fetch_fred(force=refresh), True),
         ("alternative_fear_greed", lambda: fetch_fear_greed(force=refresh), True),
         ("defillama_stablecoins", fetch_defillama_stablecoins, True),
     ]
+    if asset.asset_id == "sol":
+        loaders.extend(
+            [
+                ("defillama_solana_stablecoins", fetch_defillama_solana_stablecoins, True),
+                ("defillama_solana_tvl", fetch_defillama_solana_tvl, True),
+                ("defillama_solana_dex_volume", fetch_defillama_solana_dex_volume, True),
+                ("defillama_solana_fees_revenue", fetch_defillama_solana_fees_revenue, True),
+            ]
+        )
     if asset.enable_onchain:
         loaders.insert(2, (coinmetrics_dataset, lambda: fetch_coinmetrics(force=refresh, start=config.start_date), True))
 
@@ -1370,6 +1581,8 @@ def load_research_data(
         ("binance_funding_rate", fetch_binance_funding_rate),
         ("binance_open_interest", fetch_binance_open_interest),
         ("binance_long_short_ratio", fetch_binance_long_short_ratio),
+        ("binance_top_trader_account_ratio", fetch_binance_top_trader_account_ratio),
+        ("binance_top_trader_position_ratio", fetch_binance_top_trader_position_ratio),
         ("binance_taker_buy_sell_ratio", fetch_binance_taker_ratio),
         ("binance_basis", fetch_binance_basis),
     ]
@@ -1475,14 +1688,22 @@ def raw_column_source_group(column: str) -> str:
         return "polymarket_prediction_markets"
     if column.startswith("stablecoin_"):
         return "stablecoins"
+    if column.startswith("solana_"):
+        return "solana_ecosystem"
     if column.startswith("cm_"):
         return "coinmetrics_onchain"
-    if column in {"m2_money_supply", "fed_balance_sheet"}:
+    if column in {"m2_money_supply", "fed_balance_sheet", "treasury_general_account", "us_3m_bill_rate"}:
         return "fred_macro_monthly"
     if column in {
         "us_10y_yield",
+        "us_2y_yield",
+        "real_10y_yield",
+        "real_5y_yield",
         "us_10y_2y_spread",
         "us_10y_breakeven",
+        "inflation_expectations_5y5y",
+        "financial_stress_index",
+        "effective_fed_funds_rate",
         "fed_funds_rate",
         "reverse_repo",
         "trade_weighted_usd",
@@ -1521,6 +1742,12 @@ def add_research_external_features(released_raw: pd.DataFrame, out: pd.DataFrame
         "binance_long_short_ratio",
         "binance_long_account",
         "binance_short_account",
+        "binance_top_trader_account_long_short_ratio",
+        "binance_top_trader_account_long_account",
+        "binance_top_trader_account_short_account",
+        "binance_top_trader_position_long_short_ratio",
+        "binance_top_trader_position_long_account",
+        "binance_top_trader_position_short_account",
         "binance_taker_buy_sell_ratio",
         "binance_taker_buy_volume",
         "binance_taker_sell_volume",
@@ -1563,6 +1790,24 @@ def add_research_external_features(released_raw: pd.DataFrame, out: pd.DataFrame
         out["stablecoins_supply_chg_30d"] = _safe_log(supply).diff(30)
         out["stablecoins_supply_chg_90d"] = _safe_log(supply).diff(90)
         out["stablecoins_supply_z_365d"] = _zscore(supply, 365, 120)
+
+    solana_columns = {
+        "solana_stablecoin_circulating_usd": "stablecoin_supply",
+        "solana_tvl_usd": "tvl",
+        "solana_dex_volume_usd": "dex_volume",
+        "solana_fees_revenue_usd": "fees_revenue",
+    }
+    for column, metric in solana_columns.items():
+        if column not in released_raw:
+            continue
+        series = pd.to_numeric(released_raw[column], errors="coerce").replace(0, np.nan)
+        log_series = _safe_log(series)
+        prefix = f"solana_ecosystem_{metric}"
+        out[f"{prefix}_log"] = log_series
+        out[f"{prefix}_chg_7d"] = log_series.diff(7)
+        out[f"{prefix}_chg_30d"] = log_series.diff(30)
+        out[f"{prefix}_chg_90d"] = log_series.diff(90)
+        out[f"{prefix}_z_180d"] = _zscore(series, 180, 60)
 
     if "polymarket_implied_median_price" in released_raw and "asset_close" in released_raw:
         implied = pd.to_numeric(released_raw["polymarket_implied_median_price"], errors="coerce")
@@ -1618,7 +1863,22 @@ def _feature_source(feature: str) -> Tuple[str, str, str, int]:
         return "polymarket_prediction_markets", raw, "prediction-market transform", 1
     if feature.startswith("stablecoins_"):
         return "stablecoins", "stablecoin_total_circulating_usd", "stablecoin transform", 1
-    if feature.startswith("macro_m2_money_supply") or feature.startswith("macro_fed_balance_sheet"):
+    if feature.startswith("solana_ecosystem_"):
+        metric = feature.replace("solana_ecosystem_", "").split("_chg_")[0].split("_z_")[0].split("_log")[0]
+        raw_lookup = {
+            "stablecoin_supply": "solana_stablecoin_circulating_usd",
+            "tvl": "solana_tvl_usd",
+            "dex_volume": "solana_dex_volume_usd",
+            "fees_revenue": "solana_fees_revenue_usd",
+        }
+        raw = raw_lookup.get(metric, f"solana_{metric}")
+        return "solana_ecosystem", raw, "Solana ecosystem transform", 1
+    if (
+        feature.startswith("macro_m2_money_supply")
+        or feature.startswith("macro_fed_balance_sheet")
+        or feature.startswith("macro_treasury_general_account")
+        or feature.startswith("macro_us_3m_bill_rate")
+    ):
         return "fred_macro_monthly", feature.replace("macro_", "").split("_ret_")[0].split("_z_")[0], "macro transform", 30
     if feature.startswith("macro_"):
         return "fred_macro_daily", feature.replace("macro_", "").split("_chg_")[0].split("_z_")[0], "macro transform", 2
@@ -1956,7 +2216,7 @@ def _model_pipeline(model_name: str, random_state: int, quick: bool):
                 (
                     "model",
                     HistGradientBoostingClassifier(
-                        max_iter=45 if quick else 90,
+                        max_iter=45 if quick else 60,
                         learning_rate=0.05,
                         max_leaf_nodes=15,
                         min_samples_leaf=25,
@@ -1973,7 +2233,7 @@ def _model_pipeline(model_name: str, random_state: int, quick: bool):
                 (
                     "model",
                     RandomForestClassifier(
-                        n_estimators=70 if quick else 150,
+                        n_estimators=70 if quick else 90,
                         min_samples_leaf=18,
                         max_features="sqrt",
                         class_weight="balanced_subsample",
@@ -2393,6 +2653,10 @@ def run_backtests(
             windows = build_walk_forward_windows(target_frame, horizon, window_type, config, quick=quick)
             if quick and window_type in {"sensitivity_weekly"} and len(windows) > 96:
                 windows = windows[-96:]
+            if not quick and window_type == "sensitivity_weekly" and len(windows) > 156:
+                windows = windows[-156:]
+            if not quick and window_type == "sensitivity_overlapping_monthly" and len(windows) > 60:
+                windows = windows[-60:]
             predictions_by_model: Dict[str, pd.DataFrame] = {}
 
             for baseline in config.baseline_models:

@@ -1,6 +1,8 @@
 run_id,source,metric,status,rows,first_date,last_date,missing_pct,used_in_model,failure_reason
-sol_research_20260505T162108Z,Binance USD-M Futures,funding_rate,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
-sol_research_20260505T162108Z,Binance USD-M Futures,open_interest,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
-sol_research_20260505T162108Z,Binance USD-M Futures,long_short_ratio,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
-sol_research_20260505T162108Z,Binance USD-M Futures,taker_buy_sell_ratio,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
-sol_research_20260505T162108Z,Binance USD-M Futures,basis,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
+sol_research_20260506T062759Z,Binance USD-M Futures,funding_rate,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
+sol_research_20260506T062759Z,Binance USD-M Futures,open_interest,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
+sol_research_20260506T062759Z,Binance USD-M Futures,long_short_ratio,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
+sol_research_20260506T062759Z,Binance USD-M Futures,top_trader_account_ratio,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
+sol_research_20260506T062759Z,Binance USD-M Futures,top_trader_position_ratio,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
+sol_research_20260506T062759Z,Binance USD-M Futures,taker_buy_sell_ratio,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.
+sol_research_20260506T062759Z,Binance USD-M Futures,basis,skipped,0,,,1.0,False,SOL v1 derivatives disabled; not fabricated.

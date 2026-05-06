@@ -228,10 +228,11 @@ top[3].metric("Reliability", str(primary_row["reliability_label"]))
 top[4].metric("Run mode", "Quick" if manifest.get("quick_mode") else "Refresh")
 
 forecast_cols = st.columns(4)
+no_valid_edge = str(primary_row["selected_model"]) == "no_valid_edge"
 forecast_cols[0].metric(f"{asset_name} spot", fmt_usd(primary_row["current_price"]), str(primary_row["as_of_date"]))
 forecast_cols[1].metric("Probability up", fmt_pct(primary_row["predicted_probability_up"]))
-forecast_cols[2].metric("Expected return", fmt_pct(primary_row["expected_return"]))
-forecast_cols[3].metric("Model-implied forecast price", fmt_usd(primary_row["model_implied_forecast_price"]))
+forecast_cols[2].metric("Expected return", "N/A" if no_valid_edge else fmt_pct(primary_row["expected_return"]))
+forecast_cols[3].metric("Model-implied forecast price", "N/A" if no_valid_edge else fmt_usd(primary_row["model_implied_forecast_price"]))
 
 policy_cols = st.columns(4)
 policy_cols[0].metric("Strategy action", str(signal_interp_row.get("strategy_action", "cash")))
@@ -250,11 +251,12 @@ if outputs.get("diagnostic_warnings"):
         for warning in outputs["diagnostic_warnings"]:
             st.warning(warning)
 
-if str(primary_row["selected_model"]) == "no_valid_edge":
+if no_valid_edge:
     st.info(
         f"The full refresh did not validate a 30d {asset_name} directional edge. "
         "The dashboard is therefore showing a neutral signal instead of forcing a forecast."
     )
+    st.caption("The displayed 50% probability is a neutral/no-edge placeholder, not a tradable model forecast.")
 
 quality_tab, signal_tab, no_edge_tab, forecast_tab, calibration_tab, regimes_tab, data_tab, feature_tab = st.tabs(
     ["Model Quality", "Signal Strength", "No Edge", "Latest Forecast", "Calibration", "Regimes", "Data", "Features"]
@@ -619,6 +621,9 @@ with signal_tab:
 
 with no_edge_tab:
     st.subheader("No Valid Edge Diagnostics")
+    st.subheader("Why No Signal?")
+    st.write(str(signal_interp_row.get("reason", primary_row["selection_reason"])))
+    st.caption("Neutral or risk-off means cash / avoid long exposure. It is not a short signal.")
     official_30 = leaderboard[(leaderboard["horizon"] == 30) & (leaderboard["window_type"] == "official_monthly")].copy()
     baseline_models = ["buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"]
     best_baseline = official_30[official_30["model"].isin(baseline_models)].sort_values("directional_accuracy", ascending=False).head(1)
@@ -719,8 +724,11 @@ with no_edge_tab:
 
 with forecast_tab:
     st.subheader("Latest Precomputed Forecast")
+    latest_display = latest.copy()
+    no_edge_mask = latest_display["selected_model"].astype(str) == "no_valid_edge"
+    latest_display.loc[no_edge_mask, ["expected_return", "model_implied_forecast_price"]] = pd.NA
     st.dataframe(
-        latest[
+        latest_display[
             [
                 "horizon",
                 "selected_model",
@@ -737,7 +745,8 @@ with forecast_tab:
                 "predicted_probability_up": "{:.1%}",
                 "expected_return": "{:.1%}",
                 "model_implied_forecast_price": "${:,.0f}",
-            }
+            },
+            na_rep="N/A",
         ),
         width="stretch",
         hide_index=True,
@@ -798,6 +807,42 @@ with data_tab:
     status_counts = availability["status"].value_counts().rename_axis("status").reset_index(name="count")
     st.dataframe(status_counts, width="stretch", hide_index=True)
     st.dataframe(availability, width="stretch", hide_index=True)
+
+    st.subheader("Macro/Liquidity Coverage")
+    macro_availability = availability[availability["source"].astype(str).str.contains("FRED", case=False, na=False)].copy()
+    macro_features = features[features["source"].astype(str).str.startswith("fred_macro", na=False)].copy()
+    if macro_availability.empty and macro_features.empty:
+        st.warning("No precomputed FRED macro/liquidity coverage is available.")
+    else:
+        st.dataframe(macro_availability, width="stretch", hide_index=True)
+        if not macro_features.empty:
+            st.dataframe(
+                macro_features[["feature_name", "source", "raw_metric", "release_delay_days", "first_date", "last_date", "missing_pct", "used_in_model"]]
+                .sort_values(["source", "missing_pct", "feature_name"])
+                .head(80)
+                .style.format({"missing_pct": "{:.1%}"}),
+                width="stretch",
+                hide_index=True,
+            )
+
+    if selected_asset == "sol":
+        st.subheader("Solana Ecosystem Coverage")
+        solana_availability = availability[
+            availability["dataset"].astype(str).str.startswith("defillama_solana", na=False)
+        ].copy()
+        solana_features = features[features["source"].astype(str).eq("solana_ecosystem")].copy()
+        if solana_availability.empty and solana_features.empty:
+            st.warning("No precomputed Solana ecosystem coverage is available.")
+        else:
+            st.dataframe(solana_availability, width="stretch", hide_index=True)
+            if not solana_features.empty:
+                st.dataframe(
+                    solana_features[["feature_name", "source", "raw_metric", "release_delay_days", "first_date", "last_date", "missing_pct", "used_in_model"]]
+                    .sort_values(["missing_pct", "feature_name"])
+                    .style.format({"missing_pct": "{:.1%}"}),
+                    width="stretch",
+                    hide_index=True,
+                )
 
     st.subheader("Derivatives Coverage")
     if derivatives_coverage.empty:

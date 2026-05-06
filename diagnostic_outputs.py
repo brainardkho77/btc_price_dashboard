@@ -57,17 +57,29 @@ def preserve_quick_baseline(output_dir: Path, refresh: bool) -> Optional[Path]:
 def feature_group_for_feature(feature: str) -> str:
     if feature.startswith("polymarket_"):
         return "prediction_markets_only"
+    if feature.startswith("solana_ecosystem_"):
+        return "sol_ecosystem_only"
     if feature.startswith("derivatives_"):
         return "derivatives_only"
     if feature.startswith("stablecoins_"):
         return "stablecoins_only"
     if feature.startswith("onchain_"):
         return "onchain_only"
-    if feature.startswith("cross_asset_") or feature.startswith("macro_vix"):
+    if feature.startswith("cross_asset_") or feature.startswith("macro_vix") or "financial_stress" in feature:
         return "risk_assets_only"
-    if feature.startswith("macro_dxy") or "trade_weighted_usd" in feature or "yield" in feature or "fed_funds" in feature or "spread" in feature or "breakeven" in feature:
+    if (
+        feature.startswith("macro_dxy")
+        or "trade_weighted_usd" in feature
+        or "yield" in feature
+        or "fed_funds" in feature
+        or "effective_fed_funds" in feature
+        or "spread" in feature
+        or "breakeven" in feature
+        or "inflation_expectations" in feature
+        or "bill_rate" in feature
+    ):
         return "dollar_rates_only"
-    if "fed_balance_sheet" in feature or "m2_money_supply" in feature or "reverse_repo" in feature:
+    if "fed_balance_sheet" in feature or "m2_money_supply" in feature or "reverse_repo" in feature or "treasury_general_account" in feature:
         return "macro_liquidity_only"
     return "price_momentum_only"
 
@@ -79,6 +91,7 @@ def feature_group_columns(feature_cols: Sequence[str]) -> Dict[str, List[str]]:
         "dollar_rates_only": [],
         "risk_assets_only": [],
         "stablecoins_only": [],
+        "sol_ecosystem_only": [],
         "onchain_only": [],
         "derivatives_only": [],
         "prediction_markets_only": [],
@@ -942,6 +955,10 @@ def candidate_feature_sets(feature_cols: Sequence[str], asset_id: str) -> Dict[s
                 "btc_dollar_rates_cycle": dollar_rates_cycle,
                 "btc_derivatives_pack": derivatives_pack,
                 "btc_dollar_rates_cycle_plus_derivatives_pack": list(dict.fromkeys(dollar_rates_cycle + derivatives_pack)),
+                "btc_derivatives_v2_pack": derivatives_pack,
+                "btc_dollar_rates_cycle_plus_derivatives_v2": list(dict.fromkeys(dollar_rates_cycle + derivatives_pack)),
+                "btc_macro_liquidity_v2": only("macro_liquidity_only", "dollar_rates_only"),
+                "btc_dollar_rates_cycle_v2": list(dict.fromkeys(only("macro_liquidity_only", "dollar_rates_only") + cycle_cols)),
                 "btc_core_dollar_derivatives_cycle": list(
                     dict.fromkeys(only("price_momentum_only", "dollar_rates_only", "derivatives_only") + cycle_cols)
                 ),
@@ -955,6 +972,10 @@ def candidate_feature_sets(feature_cols: Sequence[str], asset_id: str) -> Dict[s
                 "sol_dollar_rates_only": groups.get("dollar_rates_only", []),
                 "sol_macro_liquidity_price": only("price_momentum_only", "macro_liquidity_only"),
                 "sol_risk_assets_only": groups.get("risk_assets_only", []),
+                "sol_macro_liquidity_price_v2": only("price_momentum_only", "macro_liquidity_only", "dollar_rates_only"),
+                "sol_ecosystem_pack": groups.get("sol_ecosystem_only", []),
+                "sol_price_plus_ecosystem": only("price_momentum_only", "sol_ecosystem_only"),
+                "sol_price_risk_ecosystem": only("price_momentum_only", "risk_assets_only", "sol_ecosystem_only"),
             }
         )
     return {name: list(dict.fromkeys(values)) for name, values in sets.items() if values}
@@ -1474,6 +1495,14 @@ def pruned_feature_diagnostics(
 
     asset_id = _asset_id_from_run(run_id)
     candidate_sets = candidate_feature_sets(feature_result.feature_cols, asset_id)
+    diagnostic_names = set(asset_specific_candidate_names(asset_id)) | {
+        "all_features",
+        "price_momentum_only",
+        "price_plus_macro",
+        "price_plus_dollar_rates",
+        "core_price_macro_risk",
+    }
+    candidate_sets = {name: cols for name, cols in candidate_sets.items() if name in diagnostic_names}
     if quick:
         quick_names = {
             "all_features",
@@ -1486,14 +1515,7 @@ def pruned_feature_diagnostics(
             "sol_dollar_rates_only",
         }
         candidate_sets = {name: cols for name, cols in candidate_sets.items() if name in quick_names}
-    full_model_candidates = {
-        "core_price_macro_risk",
-        "price_plus_dollar_rates",
-        "btc_core_dollar_derivatives_cycle",
-        "btc_dollar_rates_cycle",
-        "sol_rates_risk_price",
-        "sol_dollar_rates_only",
-    }
+    full_model_candidates: set[str] = set()
     leaderboard_rows = []
     signal_rows = []
     base_30 = base_leaderboard[(base_leaderboard["horizon"] == 30) & (base_leaderboard["window_type"] == "official_monthly")]
@@ -1503,6 +1525,58 @@ def pruned_feature_diagnostics(
         na_position="last",
     )
     base_best = base_ml.iloc[0].to_dict() if not base_ml.empty else {}
+
+    # The asset-specific leaderboard now performs the expensive nested
+    # promotion checks for candidate packs. Keep the legacy pruning outputs as
+    # a lightweight rollup so full refresh remains practical.
+    lightweight_rows = []
+    for _, row in base_30.iterrows():
+        model_name = str(row["model"])
+        is_baseline = model_name in BASELINE_MODELS
+        lightweight_rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "horizon": int(row.get("horizon", 30)),
+                "window_type": row.get("window_type", "official_monthly"),
+                "candidate_feature_set": "all_features_official",
+                "model_name": model_name,
+                "n_features": 0 if is_baseline else len(feature_result.feature_cols),
+                "median_selected_features": 0 if is_baseline else len(feature_result.feature_cols),
+                "n_samples": int(row.get("sample_count", 0)),
+                "directional_accuracy": row.get("directional_accuracy", np.nan),
+                "balanced_accuracy": row.get("balanced_accuracy", np.nan),
+                "brier_score": row.get("brier_score", np.nan),
+                "calibration_error": row.get("calibration_error", np.nan),
+                "sharpe": row.get("sharpe", np.nan),
+                "max_drawdown": row.get("max_drawdown", np.nan),
+                "net_return": row.get("tc_adjusted_return", np.nan),
+                "beats_buy_hold": bool(row.get("beats_buy_hold_direction", False)),
+                "beats_momentum_30d": bool(row.get("beats_momentum_30d", False)),
+                "beats_momentum_90d": bool(row.get("beats_momentum_90d", False)),
+                "beats_random_baseline": bool(row.get("beats_random_baseline", False)),
+                "selection_eligible": bool(row.get("selection_eligible", False)),
+                "promotion_eligible": False,
+                "reliability_label": row.get("reliability_label", "Low confidence"),
+                "window_fingerprint": "",
+                "rejection_reason": "baseline_not_promotable" if is_baseline else "current_all_features_reference",
+            }
+        )
+    signal_frame = empty_diagnostic_frame("signal_quality_report.csv")
+    pruned_frame = pd.DataFrame(lightweight_rows)
+    return {
+        "factor_quality_scorecard.csv": factor_quality_scorecard(run_id, raw, feature_result, config),
+        "signal_quality_report.csv": signal_frame,
+        "pruned_feature_leaderboard.csv": pruned_frame,
+        "feature_pruning_report.csv": feature_pruning_report(
+            run_id,
+            pruned_frame,
+            signal_frame,
+            base_leaderboard,
+            base_confidence,
+        ),
+        "sol_stability_report.csv": sol_stability_report(run_id, raw, feature_result, config, quick=quick),
+    }
 
     for horizon, window_type in [(30, "official_monthly")]:
         for candidate_name, candidate_cols in candidate_sets.items():
@@ -1666,6 +1740,22 @@ DERIVATIVE_DATASETS = {
     "binance_long_short_ratio": {
         "metric": "long_short_ratio",
         "columns": ["binance_long_short_ratio", "binance_long_account", "binance_short_account"],
+    },
+    "binance_top_trader_account_ratio": {
+        "metric": "top_trader_account_ratio",
+        "columns": [
+            "binance_top_trader_account_long_short_ratio",
+            "binance_top_trader_account_long_account",
+            "binance_top_trader_account_short_account",
+        ],
+    },
+    "binance_top_trader_position_ratio": {
+        "metric": "top_trader_position_ratio",
+        "columns": [
+            "binance_top_trader_position_long_short_ratio",
+            "binance_top_trader_position_long_account",
+            "binance_top_trader_position_short_account",
+        ],
     },
     "binance_taker_buy_sell_ratio": {
         "metric": "taker_buy_sell_ratio",
@@ -1869,6 +1959,10 @@ def asset_specific_candidate_names(asset_id: str) -> List[str]:
             "price_plus_stablecoins",
             "btc_derivatives_pack",
             "btc_dollar_rates_cycle_plus_derivatives_pack",
+            "btc_macro_liquidity_v2",
+            "btc_dollar_rates_cycle_v2",
+            "btc_derivatives_v2_pack",
+            "btc_dollar_rates_cycle_plus_derivatives_v2",
         ]
     if asset_id == "sol":
         return [
@@ -1878,6 +1972,10 @@ def asset_specific_candidate_names(asset_id: str) -> List[str]:
             "price_plus_macro",
             "sol_dollar_rates_only",
             "price_momentum_only",
+            "sol_macro_liquidity_price_v2",
+            "sol_ecosystem_pack",
+            "sol_price_plus_ecosystem",
+            "sol_price_risk_ecosystem",
         ]
     return ["all_features", "core_price_macro_risk", "price_momentum_only"]
 
@@ -2201,6 +2299,7 @@ def asset_feature_set_and_policy_diagnostics(
     base_reference_model = str(default_reference.get("model", "logistic_linear")) if default_reference else "logistic_linear"
     asset_rows = []
     policy_rows = []
+    prediction_cache: Dict[Tuple[Tuple[str, ...], Tuple[str, ...]], Tuple[Dict[str, pd.DataFrame], Dict[str, dict], str, Dict[str, List[int]]]] = {}
     for candidate_name in requested:
         candidate_cols = candidate_sets.get(candidate_name, [])
         model_names = asset_specific_candidate_models(asset_id, candidate_name, base_reference_model)
@@ -2282,16 +2381,36 @@ def asset_feature_set_and_policy_diagnostics(
                         "rejection_reason": "current_all_features_reference",
                     }
                 )
-        predictions, summaries, fingerprint, selected_counts = _candidate_predictions_and_summaries(
-            run_id,
-            raw,
-            feature_result,
-            candidate_name,
-            candidate_cols,
-            config,
-            quick=quick,
-            model_names_override=model_names,
-        )
+            for model_name in model_names:
+                policy_rows.append(
+                    signal_policy_report_row(
+                        run_id,
+                        asset_id,
+                        30,
+                        "official_monthly",
+                        candidate_name,
+                        model_name,
+                        pd.DataFrame(),
+                        config,
+                        quick=quick,
+                    )
+                )
+            continue
+        cache_key = (tuple(candidate_cols), tuple(model_names))
+        if cache_key in prediction_cache:
+            predictions, summaries, fingerprint, selected_counts = prediction_cache[cache_key]
+        else:
+            predictions, summaries, fingerprint, selected_counts = _candidate_predictions_and_summaries(
+                run_id,
+                raw,
+                feature_result,
+                candidate_name,
+                candidate_cols,
+                config,
+                quick=quick,
+                model_names_override=model_names,
+            )
+            prediction_cache[cache_key] = (predictions, summaries, fingerprint, selected_counts)
         for model_name in model_names:
             summary = summaries.get(model_name)
             preds = predictions.get(model_name, pd.DataFrame())
@@ -2404,10 +2523,10 @@ def asset_feature_set_and_policy_diagnostics(
     asset_frame = pd.DataFrame(asset_rows)
     if asset_id == "btc" and not asset_frame.empty:
         non_derivative = asset_frame[
-            (~asset_frame["candidate_feature_set"].astype(str).str.contains("derivatives_pack", na=False))
+            (~asset_frame["candidate_feature_set"].astype(str).str.contains("derivatives", na=False))
             & (asset_frame["candidate_feature_set"] != "all_features")
         ]
-        derivative_pack = asset_frame[asset_frame["candidate_feature_set"] == "btc_derivatives_pack"]
+        derivative_pack = asset_frame[asset_frame["candidate_feature_set"].isin(["btc_derivatives_pack", "btc_derivatives_v2_pack"])]
         best_non_derivative = float(non_derivative["directional_accuracy"].max()) if not non_derivative.empty else np.nan
         best_derivative_pack = float(derivative_pack["directional_accuracy"].max()) if not derivative_pack.empty else np.nan
         derivative_pack_improved = bool(
@@ -2416,7 +2535,9 @@ def asset_feature_set_and_policy_diagnostics(
             and best_derivative_pack > best_non_derivative
         )
         if not derivative_pack_improved:
-            mask = asset_frame["candidate_feature_set"] == "btc_dollar_rates_cycle_plus_derivatives_pack"
+            mask = asset_frame["candidate_feature_set"].isin(
+                ["btc_dollar_rates_cycle_plus_derivatives_pack", "btc_dollar_rates_cycle_plus_derivatives_v2"]
+            )
             promoted_mask = mask & (asset_frame["promotion_eligible"] == True)
             asset_frame.loc[promoted_mask, "promotion_eligible"] = False
             asset_frame.loc[mask, "rejection_reason"] = asset_frame.loc[mask, "rejection_reason"].apply(

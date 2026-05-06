@@ -7,12 +7,15 @@ from types import SimpleNamespace
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+import research_pipeline as rp
 from research_config import ResearchConfig, build_source_specs, get_asset_config
+from data_sources import FRED_SERIES, fred_api_key_configured
 from research_pipeline import (
     MANUAL_DERIVATIVE_SPECS,
     _is_monthly_polymarket_event,
     _parse_polymarket_threshold,
     _parse_binance_archive_zip,
+    _defillama_chart_frame,
     apply_release_lags,
     build_features,
     build_target_frame,
@@ -20,6 +23,7 @@ from research_pipeline import (
     compute_metrics,
     decorate_summary,
     initial_data_availability,
+    raw_column_source_group,
     select_feature_columns,
     select_primary_model,
     validate_manual_derivative_csv,
@@ -100,6 +104,10 @@ def synthetic_sol_raw(rows=900):
             "trade_weighted_usd": 120 + np.cos(np.arange(rows) / 70),
             "m2_money_supply": 20_000 + np.arange(rows),
             "stablecoin_total_circulating_usd": 120_000_000_000 + np.arange(rows) * 5_000_000,
+            "solana_stablecoin_circulating_usd": 5_000_000_000 + np.arange(rows) * 3_000_000,
+            "solana_tvl_usd": 3_000_000_000 + np.arange(rows) * 2_000_000,
+            "solana_dex_volume_usd": 500_000_000 + np.arange(rows) * 1_000_000,
+            "solana_fees_revenue_usd": 1_000_000 + np.arange(rows) * 2_000,
             "fear_greed_value": 50 + np.sin(np.arange(rows) / 30) * 20,
         },
         index=dates,
@@ -126,9 +134,27 @@ def test_sol_source_specs_record_skipped_sources_honestly():
     assert "yahoo_sol_usd" in set(availability["dataset"])
     assert "coingecko_sol_usd" in set(availability["dataset"])
     assert "spot_sol_etf_flows" in set(availability["dataset"])
+    assert "defillama_solana_tvl" in set(availability["dataset"])
+    assert "defillama_solana_dex_volume" in set(availability["dataset"])
     etf = availability[availability["dataset"] == "spot_sol_etf_flows"].iloc[0]
     assert etf["status"] == "unavailable"
     assert bool(etf["is_used_in_model"]) is False
+
+
+def test_fred_api_key_is_environment_only_and_source_specs_include_fallback(monkeypatch):
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    assert fred_api_key_configured() is False
+    monkeypatch.setenv("FRED_API_KEY", "test_key_from_environment")
+    assert fred_api_key_configured() is True
+    specs = {spec.dataset: spec for spec in build_source_specs(get_asset_config("btc"))}
+    assert "fred_macro_api" in specs
+    assert "fred_macro" in specs
+    assert specs["fred_macro_api"].source == "FRED API"
+    assert specs["fred_macro"].source == "FRED CSV downloads"
+    env_example = Path(__file__).resolve().parents[1] / ".env.example"
+    assert env_example.read_text(encoding="utf-8").strip() == "FRED_API_KEY="
+    assert "DFII10" in FRED_SERIES
+    assert "WTREGEN" in FRED_SERIES
 
 
 def test_sol_target_generation_uses_future_sol_prices_only():
@@ -141,6 +167,20 @@ def test_sol_target_generation_uses_future_sol_prices_only():
     assert np.isclose(frame.loc[row_date, "target_log_return"], expected)
     assert pd.isna(frame["target_log_return"].iloc[-1])
     assert "cross_asset_btc_ret_30d" in feature_result.features.columns
+
+
+def test_solana_ecosystem_features_are_audited_and_candidate_packed():
+    config = ResearchConfig()
+    raw = synthetic_sol_raw(rows=900)
+    feature_result = build_features(raw, config)
+    solana_features = [col for col in feature_result.features.columns if col.startswith("solana_ecosystem_")]
+    assert solana_features
+    audit = feature_result.feature_audit[feature_result.feature_audit["source"] == "solana_ecosystem"]
+    assert not audit.empty
+    assert audit["release_delay_days"].eq(1).all()
+    sets = candidate_feature_sets(feature_result.feature_cols, "sol")
+    assert "sol_ecosystem_pack" in sets
+    assert any(col.startswith("solana_ecosystem_") for col in sets["sol_ecosystem_pack"])
 
 
 def test_target_generation_uses_future_prices_only():
@@ -179,6 +219,10 @@ def test_non_price_external_features_are_lagged_conservatively():
     config = ResearchConfig()
     raw = synthetic_research_raw(rows=80)
     raw["polymarket_upside_probability"] = np.linspace(0.2, 0.8, len(raw))
+    raw["real_10y_yield"] = np.linspace(1.0, 2.0, len(raw))
+    raw["us_3m_bill_rate"] = np.linspace(4.0, 5.0, len(raw))
+    raw["treasury_general_account"] = np.linspace(700_000, 800_000, len(raw))
+    raw["solana_tvl_usd"] = np.linspace(1_000_000_000, 2_000_000_000, len(raw))
     released = apply_release_lags(raw, config)
     assert released["btc_close"].iloc[10] == raw["btc_close"].iloc[10]
     assert released["binance_funding_rate"].iloc[10] == raw["binance_funding_rate"].iloc[9]
@@ -187,6 +231,11 @@ def test_non_price_external_features_are_lagged_conservatively():
     assert released["m2_money_supply"].iloc[40] == raw["m2_money_supply"].iloc[10]
     assert released["cm_active_addresses"].iloc[10] == raw["cm_active_addresses"].iloc[8]
     assert released["polymarket_upside_probability"].iloc[10] == raw["polymarket_upside_probability"].iloc[9]
+    assert released["real_10y_yield"].iloc[10] == raw["real_10y_yield"].iloc[8]
+    assert released["us_3m_bill_rate"].iloc[40] == raw["us_3m_bill_rate"].iloc[10]
+    assert released["treasury_general_account"].iloc[40] == raw["treasury_general_account"].iloc[10]
+    assert released["solana_tvl_usd"].iloc[10] == raw["solana_tvl_usd"].iloc[9]
+    assert raw_column_source_group("solana_tvl_usd") == "solana_ecosystem"
 
 
 def test_monthly_date_alignment_for_30d_official_windows():
@@ -483,6 +532,7 @@ def test_feature_group_mapping_is_stable():
     assert feature_group_for_feature("onchain_mvrv") == "onchain_only"
     assert feature_group_for_feature("derivatives_funding_rate") == "derivatives_only"
     assert feature_group_for_feature("polymarket_ladder_skew") == "prediction_markets_only"
+    assert feature_group_for_feature("solana_ecosystem_tvl_chg_30d") == "sol_ecosystem_only"
 
 
 def test_polymarket_threshold_parsing_and_monthly_event_filter():
@@ -530,14 +580,25 @@ def test_candidate_feature_sets_keep_polymarket_diagnostic_only():
     cols = [
         "momentum_ret_30d",
         "macro_us_10y_yield",
+        "macro_real_10y_yield",
+        "macro_treasury_general_account_ret_30d",
         "cross_asset_spx_ret_30d",
         "stablecoins_supply_chg_30d",
         "derivatives_funding_rate",
+        "derivatives_top_trader_account_long_short_ratio_z_90d",
+        "solana_ecosystem_tvl_chg_30d",
         "polymarket_ladder_skew",
     ]
     sets = candidate_feature_sets(cols, "btc")
     assert "polymarket_ladder_skew" not in sets["no_polymarket"]
     assert "polymarket_ladder_skew" not in sets["all_features"]
+    assert "btc_derivatives_v2_pack" in sets
+    assert "derivatives_top_trader_account_long_short_ratio_z_90d" in sets["btc_derivatives_v2_pack"]
+    assert "btc_macro_liquidity_v2" in sets
+    sol_sets = candidate_feature_sets(cols, "sol")
+    assert "sol_ecosystem_pack" in sol_sets
+    assert "solana_ecosystem_tvl_chg_30d" in sol_sets["sol_ecosystem_pack"]
+    assert "sol_price_plus_ecosystem" in sol_sets
 
 
 def test_nested_feature_pruning_uses_train_columns_only_and_drops_correlated_features():
@@ -611,6 +672,56 @@ def test_archive_ratio_manual_csvs_validate_with_real_available_columns(tmp_path
     taker_result = validate_manual_derivative_csv(taker, MANUAL_DERIVATIVE_SPECS["binance_taker_buy_sell_ratio"])
     assert taker_result.status == "worked"
     assert list(taker_result.frame.columns) == ["binance_taker_buy_sell_ratio"]
+
+    top_account = tmp_path / "top_account.csv"
+    top_account.write_text("date,long_short_ratio\n2024-01-01,1.05\n2024-01-02,0.90\n", encoding="utf-8")
+    top_result = validate_manual_derivative_csv(top_account, MANUAL_DERIVATIVE_SPECS["binance_top_trader_account_ratio"])
+    assert top_result.status == "worked"
+    assert list(top_result.frame.columns) == ["binance_top_trader_account_long_short_ratio"]
+
+
+def test_defillama_chart_parser_handles_list_payloads(monkeypatch, tmp_path):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"totalDataChart": [[1_700_000_000, 123.4], [1_700_086_400, 234.5]]}
+
+    monkeypatch.setattr(rp, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(rp.requests, "get", lambda *args, **kwargs: FakeResponse())
+    frame = _defillama_chart_frame(
+        dataset="defillama_test_chart",
+        endpoint="https://api.llama.fi/overview/dexs/Solana",
+        output_column="solana_dex_volume_usd",
+    )
+    assert list(frame.columns) == ["solana_dex_volume_usd"]
+    assert len(frame) == 2
+    assert frame["solana_dex_volume_usd"].iloc[-1] == 234.5
+
+
+def test_binance_recent_window_endpoints_are_not_treated_as_full_history(monkeypatch):
+    calls = []
+
+    def fake_chunked(endpoint, params, **kwargs):
+        calls.append({"endpoint": endpoint, **kwargs})
+        return [
+            {
+                "timestamp": 1_700_000_000_000,
+                "sumOpenInterest": "1",
+                "sumOpenInterestValue": "2",
+                "longShortRatio": "1.1",
+                "longAccount": "0.52",
+                "shortAccount": "0.48",
+            }
+        ]
+
+    monkeypatch.setattr(rp, "_fetch_binance_chunked", fake_chunked)
+    monkeypatch.setattr(rp, "_write_cached_dataset", lambda dataset, frame: frame)
+    rp.fetch_binance_open_interest()
+    rp.fetch_binance_top_trader_account_ratio()
+    assert calls[0]["recent_days"] == 29
+    assert calls[1]["recent_days"] == 29
 
 
 def test_binance_archive_zip_parser_aggregates_daily_metrics(tmp_path):

@@ -15,6 +15,7 @@ RELEASE_DELAYS_DAYS: Dict[str, int] = {
     "coinmetrics_onchain": 2,
     "manual_csv": 1,
     "polymarket_prediction_markets": 1,
+    "solana_ecosystem": 1,
 }
 
 MIN_SAMPLE_THRESHOLDS = {
@@ -121,7 +122,25 @@ class ResearchConfig:
 def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
     coinmetrics_dataset = f"coinmetrics_{asset.asset_id}_daily"
     etf_dataset = f"spot_{asset.asset_id}_etf_flows"
-    return [
+    requested_fred_fields = [
+        "us_10y_yield",
+        "us_2y_yield",
+        "real_10y_yield",
+        "real_5y_yield",
+        "us_3m_bill_rate",
+        "us_10y_2y_spread",
+        "us_10y_breakeven",
+        "inflation_expectations_5y5y",
+        "financial_stress_index",
+        "effective_fed_funds_rate",
+        "fed_funds_rate",
+        "fed_balance_sheet",
+        "reverse_repo",
+        "treasury_general_account",
+        "m2_money_supply",
+        "trade_weighted_usd",
+    ]
+    specs = [
         SourceSpec(
             source="Coinbase Exchange",
             endpoint=f"https://api.exchange.coinbase.com/products/{asset.coinbase_product}/candles",
@@ -161,19 +180,18 @@ def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
             source_group="price",
         ),
         SourceSpec(
+            source="FRED API",
+            endpoint="https://api.stlouisfed.org/fred/v2/series/observations",
+            dataset="fred_macro_api",
+            requested_fields=requested_fred_fields,
+            source_group="fred_macro_daily",
+            revision_warning="FRED API data is revised historical data, not point-in-time vintages.",
+        ),
+        SourceSpec(
             source="FRED CSV downloads",
             endpoint="https://fred.stlouisfed.org/graph/fredgraph.csv",
             dataset="fred_macro",
-            requested_fields=[
-                "us_10y_yield",
-                "us_10y_2y_spread",
-                "us_10y_breakeven",
-                "fed_funds_rate",
-                "fed_balance_sheet",
-                "reverse_repo",
-                "m2_money_supply",
-                "trade_weighted_usd",
-            ],
+            requested_fields=requested_fred_fields,
             source_group="fred_macro_daily",
             revision_warning="FRED graph downloads are revised historical data, not point-in-time vintages.",
         ),
@@ -231,6 +249,20 @@ def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
         ),
         SourceSpec(
             source="Binance USD-M Futures",
+            endpoint="https://fapi.binance.com/futures/data/topLongShortAccountRatio",
+            dataset="binance_top_trader_account_ratio",
+            requested_fields=["top_trader_long_short_account_ratio", "top_trader_long_account", "top_trader_short_account"],
+            source_group="binance_derivatives",
+        ),
+        SourceSpec(
+            source="Binance USD-M Futures",
+            endpoint="https://fapi.binance.com/futures/data/topLongShortPositionRatio",
+            dataset="binance_top_trader_position_ratio",
+            requested_fields=["top_trader_long_short_position_ratio", "top_trader_long_account", "top_trader_short_account"],
+            source_group="binance_derivatives",
+        ),
+        SourceSpec(
+            source="Binance USD-M Futures",
             endpoint="https://fapi.binance.com/futures/data/takerlongshortRatio",
             dataset="binance_taker_buy_sell_ratio",
             requested_fields=["taker_buy_sell_ratio", "taker_buy_volume", "taker_sell_volume"],
@@ -282,6 +314,40 @@ def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
             is_used_in_model=False,
         ),
     ]
+    if asset.asset_id == "sol":
+        specs.extend(
+            [
+                SourceSpec(
+                    source="DefiLlama Solana Stablecoins API",
+                    endpoint="https://stablecoins.llama.fi/stablecoincharts/Solana",
+                    dataset="defillama_solana_stablecoins",
+                    requested_fields=["solana_stablecoin_circulating_usd"],
+                    source_group="solana_ecosystem",
+                ),
+                SourceSpec(
+                    source="DefiLlama Solana TVL API",
+                    endpoint="https://api.llama.fi/v2/historicalChainTvl/Solana",
+                    dataset="defillama_solana_tvl",
+                    requested_fields=["solana_tvl_usd"],
+                    source_group="solana_ecosystem",
+                ),
+                SourceSpec(
+                    source="DefiLlama Solana DEX Volume API",
+                    endpoint="https://api.llama.fi/overview/dexs/Solana",
+                    dataset="defillama_solana_dex_volume",
+                    requested_fields=["solana_dex_volume_usd"],
+                    source_group="solana_ecosystem",
+                ),
+                SourceSpec(
+                    source="DefiLlama Solana Fees API",
+                    endpoint="https://api.llama.fi/overview/fees/Solana",
+                    dataset="defillama_solana_fees_revenue",
+                    requested_fields=["solana_fees_revenue_usd"],
+                    source_group="solana_ecosystem",
+                ),
+            ]
+        )
+    return specs
 
 
 SOURCE_SPECS: List[SourceSpec] = build_source_specs(ASSET_CONFIGS["btc"])

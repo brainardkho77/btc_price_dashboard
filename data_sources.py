@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,11 +33,19 @@ YAHOO_MARKETS: Dict[str, str] = {
 
 FRED_SERIES: Dict[str, str] = {
     "DGS10": "us_10y_yield",
+    "DGS2": "us_2y_yield",
+    "DFII10": "real_10y_yield",
+    "DFII5": "real_5y_yield",
+    "TB3MS": "us_3m_bill_rate",
     "T10Y2Y": "us_10y_2y_spread",
     "T10YIE": "us_10y_breakeven",
+    "T5YIFR": "inflation_expectations_5y5y",
+    "STLFSI4": "financial_stress_index",
+    "EFFR": "effective_fed_funds_rate",
     "DFF": "fed_funds_rate",
     "WALCL": "fed_balance_sheet",
     "RRPONTSYD": "reverse_repo",
+    "WTREGEN": "treasury_general_account",
     "M2SL": "m2_money_supply",
     "DTWEXBGS": "trade_weighted_usd",
 }
@@ -68,6 +77,10 @@ SOURCE_NOTES = {
 
 class DataSourceError(RuntimeError):
     pass
+
+
+def fred_api_key_configured() -> bool:
+    return bool(os.environ.get("FRED_API_KEY", "").strip())
 
 
 def _cache_path(name: str) -> Path:
@@ -263,11 +276,7 @@ def fetch_coinmetrics(force: bool = False, start: str = "2014-01-01") -> pd.Data
     return fetch_with_cache("coinmetrics_btc_daily", _fetch, force=force, max_age_hours=12)
 
 
-def fetch_fred_series(series_id: str) -> pd.Series:
-    url = "https://fred.stlouisfed.org/graph/fredgraph.csv"
-    response = requests.get(url, params={"id": series_id}, timeout=30, headers={"User-Agent": USER_AGENT})
-    response.raise_for_status()
-    frame = pd.read_csv(io.StringIO(response.text))
+def _parse_fred_observations(frame: pd.DataFrame, series_id: str) -> pd.Series:
     if frame.empty or len(frame.columns) < 2:
         raise DataSourceError(f"FRED returned no data for {series_id}")
     frame = frame.rename(columns={"observation_date": "date", series_id: "value"})
@@ -276,13 +285,65 @@ def fetch_fred_series(series_id: str) -> pd.Series:
     return frame.set_index("date")["value"].sort_index()
 
 
+def fetch_fred_graph_csv_series(series_id: str) -> pd.Series:
+    url = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+    response = requests.get(url, params={"id": series_id}, timeout=30, headers={"User-Agent": USER_AGENT})
+    response.raise_for_status()
+    frame = pd.read_csv(io.StringIO(response.text))
+    return _parse_fred_observations(frame, series_id)
+
+
+def fetch_fred_api_series(series_id: str, start: str = "2014-01-01") -> pd.Series:
+    api_key = os.environ.get("FRED_API_KEY", "").strip()
+    if not api_key:
+        raise DataSourceError("FRED_API_KEY is not set.")
+    response = requests.get(
+        "https://api.stlouisfed.org/fred/v2/series/observations",
+        params={
+            "series_id": series_id,
+            "file_type": "json",
+            "observation_start": start,
+        },
+        headers={
+            "User-Agent": USER_AGENT,
+            "Authorization": f"Bearer {api_key}",
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("observations") or []
+    if not rows:
+        raise DataSourceError(f"FRED API returned no observations for {series_id}")
+    frame = pd.DataFrame(rows).rename(columns={"value": series_id, "date": "observation_date"})
+    return _parse_fred_observations(frame[["observation_date", series_id]], series_id)
+
+
+def _fetch_fred_series_map(series_fetcher: Callable[[str], pd.Series]) -> pd.DataFrame:
+    frames = []
+    failures = []
+    for series_id, column in FRED_SERIES.items():
+        try:
+            frames.append(series_fetcher(series_id).rename(column).to_frame())
+        except Exception as exc:
+            failures.append(f"{series_id}: {exc}")
+        time.sleep(0.1)
+    if not frames:
+        detail = "; ".join(failures[:3])
+        raise DataSourceError(f"FRED returned no usable series. {detail}")
+    return pd.concat(frames, axis=1).sort_index()
+
+
+def fetch_fred_api(force: bool = False) -> pd.DataFrame:
+    def _fetch() -> pd.DataFrame:
+        return _fetch_fred_series_map(fetch_fred_api_series)
+
+    return fetch_with_cache("fred_macro_api", _fetch, force=force, max_age_hours=24)
+
+
 def fetch_fred(force: bool = False) -> pd.DataFrame:
     def _fetch() -> pd.DataFrame:
-        frames = []
-        for series_id, column in FRED_SERIES.items():
-            frames.append(fetch_fred_series(series_id).rename(column).to_frame())
-            time.sleep(0.1)
-        return pd.concat(frames, axis=1).sort_index()
+        return _fetch_fred_series_map(fetch_fred_graph_csv_series)
 
     return fetch_with_cache("fred_macro", _fetch, force=force, max_age_hours=24)
 

@@ -189,10 +189,18 @@ def add_cross_asset_features(raw: pd.DataFrame, out: pd.DataFrame) -> None:
 def add_macro_features(raw: pd.DataFrame, out: pd.DataFrame) -> None:
     level_cols = [
         "us_10y_yield",
+        "us_2y_yield",
+        "real_10y_yield",
+        "real_5y_yield",
+        "us_3m_bill_rate",
         "us_10y_2y_spread",
         "us_10y_breakeven",
+        "inflation_expectations_5y5y",
+        "financial_stress_index",
+        "effective_fed_funds_rate",
         "fed_funds_rate",
         "reverse_repo",
+        "treasury_general_account",
         "trade_weighted_usd",
     ]
     for column in level_cols:
@@ -203,8 +211,19 @@ def add_macro_features(raw: pd.DataFrame, out: pd.DataFrame) -> None:
         out[prefix] = series
         out[f"{prefix}_chg_7d"] = series.diff(7)
         out[f"{prefix}_chg_30d"] = series.diff(30)
+        out[f"{prefix}_chg_90d"] = series.diff(90)
+        out[f"{prefix}_z_365d"] = _zscore(series, 365, 120)
 
-    for column in ["fed_balance_sheet", "m2_money_supply"]:
+    if {"us_10y_yield", "us_2y_yield"}.issubset(raw.columns):
+        spread = raw["us_10y_yield"].shift(1) - raw["us_2y_yield"].shift(1)
+        out["macro_us_10y_2y_spread_calc"] = spread
+        out["macro_us_10y_2y_spread_calc_chg_30d"] = spread.diff(30)
+    if {"us_10y_yield", "us_3m_bill_rate"}.issubset(raw.columns):
+        spread = raw["us_10y_yield"].shift(1) - raw["us_3m_bill_rate"].shift(1)
+        out["macro_us_10y_3m_spread_calc"] = spread
+        out["macro_us_10y_3m_spread_calc_chg_30d"] = spread.diff(30)
+
+    for column in ["fed_balance_sheet", "m2_money_supply", "treasury_general_account"]:
         if column not in raw:
             continue
         lag_days = 30 if column == "m2_money_supply" else 7

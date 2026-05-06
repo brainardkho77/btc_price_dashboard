@@ -181,7 +181,7 @@ def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
         ),
         SourceSpec(
             source="FRED API",
-            endpoint="https://api.stlouisfed.org/fred/v2/series/observations",
+            endpoint="https://api.stlouisfed.org/fred/series/observations",
             dataset="fred_macro_api",
             requested_fields=requested_fred_fields,
             source_group="fred_macro_daily",

@@ -150,6 +150,7 @@ def test_fred_api_key_is_environment_only_and_source_specs_include_fallback(monk
     assert "fred_macro_api" in specs
     assert "fred_macro" in specs
     assert specs["fred_macro_api"].source == "FRED API"
+    assert specs["fred_macro_api"].endpoint == "https://api.stlouisfed.org/fred/series/observations"
     assert specs["fred_macro"].source == "FRED CSV downloads"
     env_example = Path(__file__).resolve().parents[1] / ".env.example"
     assert env_example.read_text(encoding="utf-8").strip() == "FRED_API_KEY="

@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `btc_research_20260506T060635Z`
+- Full refresh run ID: `btc_research_20260506T104844Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -44,8 +44,8 @@ Validation gates failed by ML model:
 - `random_forest` in `post_etf`: samples `27`, accuracy `59.3%`, net return `103.0%`, reliability `Low confidence`
 - `momentum_90d` in `bear_market`: samples `45`, accuracy `57.8%`, net return `64.0%`, reliability `Low confidence`
 - `momentum_30d` in `low_rate`: samples `34`, accuracy `55.9%`, net return `361.2%`, reliability `Low confidence`
-- `logistic_linear` in `post_etf`: samples `27`, accuracy `55.6%`, net return `76.6%`, reliability `Low confidence`
 - `momentum_90d` in `post_etf`: samples `27`, accuracy `55.6%`, net return `122.8%`, reliability `Low confidence`
+- `logistic_linear` in `post_etf`: samples `27`, accuracy `55.6%`, net return `105.8%`, reliability `Low confidence`
 - `momentum_90d` in `pre_etf`: samples `73`, accuracy `54.8%`, net return `322.1%`, reliability `Low confidence`
 
 ## Binance Derivatives

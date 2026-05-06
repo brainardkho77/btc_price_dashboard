@@ -2,7 +2,7 @@
 
 ## Run Summary
 - Asset: `BTC`
-- Run ID: `btc_research_20260506T060635Z`
+- Run ID: `btc_research_20260506T104844Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -19,7 +19,7 @@
 
 ## Promising But Rejected Candidates
 - `all_features_official` / `hgb`: label `promising_but_rejected`, accuracy `49.0%`, net return `724.8%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
-- `all_features_official` / `logistic_linear`: label `promising_but_rejected`, accuracy `49.0%`, net return `353.4%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
+- `all_features_official` / `logistic_linear`: label `promising_but_rejected`, accuracy `49.0%`, net return `428.5%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
 - `all_features_official` / `random_forest`: label `promising_but_rejected`, accuracy `44.0%`, net return `239.5%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
 
 ## BTC No-Edge Drilldown
@@ -29,19 +29,19 @@
 - Signal quality rows were unavailable.
 
 ## Strongest 30d Factors
-- `derivatives_sum_open_interest_value` (`derivatives_only`): IC `-0.354`, p-value `0.002`, coverage `67.0%`, keep `True`.
+- `derivatives_sum_open_interest_value` (`derivatives_only`): IC `-0.357`, p-value `0.002`, coverage `67.0%`, keep `True`.
 - `macro_us_10y_2y_spread_z_365d` (`dollar_rates_only`): IC `0.296`, p-value `0.002`, coverage `100.0%`, keep `True`.
 - `cycle_cos_4y` (`price_momentum_only`): IC `0.288`, p-value `0.003`, coverage `100.0%`, keep `True`.
-- `derivatives_sum_open_interest_z_365d` (`derivatives_only`): IC `-0.277`, p-value `0.023`, coverage `64.0%`, keep `True`.
+- `derivatives_sum_open_interest_z_365d` (`derivatives_only`): IC `-0.272`, p-value `0.026`, coverage `64.0%`, keep `True`.
 - `onchain_supply_z_365d` (`onchain_only`): IC `-0.257`, p-value `0.009`, coverage `100.0%`, keep `True`.
 - `macro_financial_stress_index_chg_7d` (`risk_assets_only`): IC `0.248`, p-value `0.011`, coverage `100.0%`, keep `True`.
 - `macro_real_5y_yield_chg_90d` (`dollar_rates_only`): IC `-0.240`, p-value `0.014`, coverage `100.0%`, keep `True`.
 - `macro_us_10y_2y_spread_chg_90d` (`dollar_rates_only`): IC `0.240`, p-value `0.014`, coverage `100.0%`, keep `True`.
 - `macro_vix_ret_30d` (`risk_assets_only`): IC `0.239`, p-value `0.015`, coverage `100.0%`, keep `True`.
-- `derivatives_taker_buy_sell_ratio_z_90d` (`derivatives_only`): IC `-0.229`, p-value `0.062`, coverage `65.0%`, keep `True`.
+- `macro_trade_weighted_usd_chg_90d` (`dollar_rates_only`): IC `-0.221`, p-value `0.025`, coverage `100.0%`, keep `True`.
 
 ## Noisy Or Redundant Factor Reasons
-- `weak_ic`: `68` features
+- `weak_ic`: `66` features
 
 ## Recommendation
 - Neutral signal justified: `True`

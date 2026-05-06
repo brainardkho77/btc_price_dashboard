@@ -298,11 +298,12 @@ def fetch_fred_api_series(series_id: str, start: str = "2014-01-01") -> pd.Serie
     if not api_key:
         raise DataSourceError("FRED_API_KEY is not set.")
     response = requests.get(
-        "https://api.stlouisfed.org/fred/v2/series/observations",
+        "https://api.stlouisfed.org/fred/series/observations",
         params={
             "series_id": series_id,
             "file_type": "json",
             "observation_start": start,
+            "api_key": api_key,
         },
         headers={
             "User-Agent": USER_AGENT,
@@ -310,7 +311,8 @@ def fetch_fred_api_series(series_id: str, start: str = "2014-01-01") -> pd.Serie
         },
         timeout=30,
     )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        raise DataSourceError(f"FRED API request failed for {series_id} with HTTP {response.status_code}.")
     payload = response.json()
     rows = payload.get("observations") or []
     if not rows:

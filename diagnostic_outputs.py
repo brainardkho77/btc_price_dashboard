@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from data_sources import FRED_SERIES
 from research_config import MIN_SAMPLE_THRESHOLDS, ResearchConfig
 from schemas import empty_diagnostic_frame, empty_output_frame, write_diagnostic_csv, write_schema_csv
 
@@ -955,6 +956,7 @@ def candidate_feature_sets(feature_cols: Sequence[str], asset_id: str) -> Dict[s
                 "btc_dollar_rates_cycle": dollar_rates_cycle,
                 "btc_derivatives_pack": derivatives_pack,
                 "btc_dollar_rates_cycle_plus_derivatives_pack": list(dict.fromkeys(dollar_rates_cycle + derivatives_pack)),
+                "btc_macro_liquidity": only("macro_liquidity_only", "dollar_rates_only"),
                 "btc_derivatives_v2_pack": derivatives_pack,
                 "btc_dollar_rates_cycle_plus_derivatives_v2": list(dict.fromkeys(dollar_rates_cycle + derivatives_pack)),
                 "btc_macro_liquidity_v2": only("macro_liquidity_only", "dollar_rates_only"),
@@ -1959,6 +1961,7 @@ def asset_specific_candidate_names(asset_id: str) -> List[str]:
             "price_plus_stablecoins",
             "btc_derivatives_pack",
             "btc_dollar_rates_cycle_plus_derivatives_pack",
+            "btc_macro_liquidity",
             "btc_macro_liquidity_v2",
             "btc_dollar_rates_cycle_v2",
             "btc_derivatives_v2_pack",
@@ -1972,6 +1975,7 @@ def asset_specific_candidate_names(asset_id: str) -> List[str]:
             "price_plus_macro",
             "sol_dollar_rates_only",
             "price_momentum_only",
+            "sol_macro_liquidity_price",
             "sol_macro_liquidity_price_v2",
             "sol_ecosystem_pack",
             "sol_price_plus_ecosystem",
@@ -2551,6 +2555,309 @@ def asset_feature_set_and_policy_diagnostics(
         "asset_feature_set_leaderboard.csv": asset_frame,
         "signal_policy_report.csv": pd.DataFrame(policy_rows),
     }
+
+
+def macro_candidate_names(asset_id: str) -> List[str]:
+    if asset_id == "btc":
+        return [
+            "btc_dollar_rates_cycle",
+            "core_price_macro_risk",
+            "price_plus_dollar_rates",
+            "btc_macro_liquidity",
+            "btc_dollar_rates_cycle_v2",
+        ]
+    if asset_id == "sol":
+        return [
+            "sol_rates_risk_price",
+            "price_plus_macro",
+            "sol_dollar_rates_only",
+            "sol_macro_liquidity_price",
+        ]
+    return ["price_plus_macro", "core_price_macro_risk"]
+
+
+def _fred_release_lag(series_name: str, config: ResearchConfig) -> int:
+    monthly = {"m2_money_supply", "fed_balance_sheet", "treasury_general_account", "us_3m_bill_rate"}
+    group = "fred_macro_monthly" if series_name in monthly else "fred_macro_daily"
+    return int(config.release_delays_days.get(group, 30 if group.endswith("monthly") else 2))
+
+
+def _series_status_lookup(availability: pd.DataFrame, series_id: str, series_name: str) -> dict:
+    if availability.empty:
+        return {}
+    series_rows = availability[
+        availability["dataset"].astype(str).eq(f"fred_macro_api:{series_id}")
+        | availability["dataset"].astype(str).eq(f"fred_macro:{series_id}")
+        | availability["requested_fields"].astype(str).eq(series_name)
+    ]
+    if not series_rows.empty:
+        return series_rows.iloc[0].to_dict()
+    fred_rows = availability[availability["dataset"].astype(str).isin(["fred_macro_api", "fred_macro"])]
+    if not fred_rows.empty:
+        return fred_rows.iloc[0].to_dict()
+    return {}
+
+
+def fred_macro_impact_report(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+    availability: pd.DataFrame,
+    feature_signal: pd.DataFrame,
+    factor_quality: pd.DataFrame,
+) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    audit = feature_result.feature_audit.copy()
+    candidate_sets = candidate_feature_sets(feature_result.feature_cols, asset_id)
+    macro_names = macro_candidate_names(asset_id)
+    rows = []
+    for series_id, series_name in FRED_SERIES.items():
+        status_row = _series_status_lookup(availability, series_id, series_name)
+        source_status = str(status_row.get("status", "unknown") or "unknown")
+        series = pd.to_numeric(raw.get(series_name, pd.Series(index=raw.index, dtype=float)), errors="coerce")
+        valid = series.dropna()
+        series_missing = float(1 - series.notna().mean()) if len(series) else np.nan
+        release_lag = _fred_release_lag(series_name, config)
+        feature_rows = audit[
+            audit["source"].astype(str).str.startswith("fred_macro", na=False)
+            & audit["raw_metric"].astype(str).eq(series_name)
+        ].copy()
+        if feature_rows.empty:
+            feature_rows = pd.DataFrame(
+                [
+                    {
+                        "feature_name": "",
+                        "missing_pct": series_missing,
+                        "used_in_model": False,
+                    }
+                ]
+            )
+        for _, feature_row in feature_rows.iterrows():
+            feature = str(feature_row.get("feature_name", ""))
+            signal = feature_signal[
+                (feature_signal["feature_name"].astype(str) == feature)
+                & (feature_signal["horizon"] == 30)
+                & (feature_signal["window_type"] == "official_monthly")
+            ] if feature and not feature_signal.empty else pd.DataFrame()
+            quality = factor_quality[
+                (factor_quality["feature_name"].astype(str) == feature)
+                & (factor_quality["horizon"] == 30)
+                & (factor_quality["window_type"] == "official_monthly")
+            ] if feature and not factor_quality.empty else pd.DataFrame()
+            missing_pct = float(feature_row.get("missing_pct", series_missing)) if pd.notna(feature_row.get("missing_pct", np.nan)) else series_missing
+            used_sets = [
+                name
+                for name in macro_names
+                if feature and feature in set(candidate_sets.get(name, []))
+            ]
+            ic = signal["information_coefficient"].iloc[0] if not signal.empty else np.nan
+            p_value = signal["ic_p_value"].iloc[0] if not signal.empty else np.nan
+            coverage_pass = bool(pd.notna(missing_pct) and missing_pct <= (1 - config.min_feature_valid_ratio))
+            stability_pass = bool(
+                not quality.empty
+                and bool(quality["keep_candidate"].iloc[0])
+                and pd.notna(ic)
+                and abs(float(ic)) >= 0.05
+            )
+            notes = []
+            if source_status != "worked":
+                notes.append("source_not_worked")
+            if not coverage_pass:
+                notes.append("coverage_below_threshold")
+            if feature and not bool(feature_row.get("used_in_model", False)):
+                notes.append("not_in_official_feature_cols")
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "series_id": series_id,
+                    "series_name": series_name,
+                    "source_status": source_status,
+                    "first_available_date": valid.index.min().date().isoformat() if len(valid) else str(status_row.get("first_date", "") or ""),
+                    "last_available_date": valid.index.max().date().isoformat() if len(valid) else str(status_row.get("last_date", "") or ""),
+                    "n_observations": int(len(valid) if len(valid) else status_row.get("rows", 0) or 0),
+                    "missing_pct": missing_pct,
+                    "release_lag_days": release_lag,
+                    "feature_name": feature,
+                    "information_coefficient": ic,
+                    "ic_p_value": p_value,
+                    "coverage_pass": coverage_pass,
+                    "stability_pass": stability_pass,
+                    "used_in_candidate_sets": "|".join(used_sets),
+                    "notes": "; ".join(dict.fromkeys(notes)),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def macro_candidate_impact_report(run_id: str, asset_feature_sets: pd.DataFrame) -> pd.DataFrame:
+    if asset_feature_sets.empty:
+        return empty_diagnostic_frame("macro_candidate_impact_report.csv")
+    asset_id = _asset_id_from_run(run_id)
+    macro_names = set(macro_candidate_names(asset_id))
+    frame = asset_feature_sets[asset_feature_sets["candidate_feature_set"].astype(str).isin(macro_names)].copy()
+    rows = []
+    for _, row in frame.iterrows():
+        promoted = bool(row.get("promotion_eligible", False))
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "horizon": int(row.get("horizon", 30)),
+                "window_type": row.get("window_type", "official_monthly"),
+                "candidate_feature_set": row.get("candidate_feature_set", ""),
+                "model_name": row.get("model_name", ""),
+                "n_features": int(row.get("n_features", 0) or 0),
+                "n_samples": int(row.get("n_samples", 0) or 0),
+                "directional_accuracy": row.get("directional_accuracy", np.nan),
+                "balanced_accuracy": row.get("balanced_accuracy", np.nan),
+                "brier_score": row.get("brier_score", np.nan),
+                "calibration_error": row.get("calibration_error", np.nan),
+                "tc_adjusted_return": row.get("net_return", np.nan),
+                "sharpe": row.get("sharpe", np.nan),
+                "max_drawdown": row.get("max_drawdown", np.nan),
+                "bootstrap_ci_low": row.get("bootstrap_ci_low", np.nan),
+                "bootstrap_ci_high": row.get("bootstrap_ci_high", np.nan),
+                "permutation_p_value": row.get("permutation_p_value", np.nan),
+                "beats_buy_hold": bool(row.get("beats_buy_hold", False)),
+                "beats_momentum_30d": bool(row.get("beats_momentum_30d", False)),
+                "beats_momentum_90d": bool(row.get("beats_momentum_90d", False)),
+                "beats_random_baseline": bool(row.get("beats_random_baseline", False)),
+                "promotion_decision": "promote" if promoted else "reject",
+                "rejection_reason": row.get("rejection_reason", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _read_optional_csv(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+def _baseline_dir_for_asset(output_dir: Path, baseline_dir: Optional[Path], asset_id: str) -> Optional[Path]:
+    def valid_fred_fallback_baseline(candidate: Path) -> bool:
+        try:
+            manifest = json.loads((candidate / "run_manifest.json").read_text(encoding="utf-8"))
+            availability = pd.read_csv(candidate / "data_availability.csv")
+        except Exception:
+            return False
+        if manifest.get("quick_mode"):
+            return False
+        fred_api = availability[availability["dataset"].astype(str).eq("fred_macro_api")]
+        fred_csv = availability[availability["dataset"].astype(str).eq("fred_macro")]
+        api_not_used = fred_api.empty or fred_api["status"].astype(str).isin(["skipped", "failed"]).any()
+        csv_worked = not fred_csv.empty and fred_csv["status"].astype(str).eq("worked").any()
+        return bool(api_not_used and csv_worked)
+
+    candidates = []
+    if baseline_dir is not None:
+        candidates.append(baseline_dir)
+    candidates.extend(
+        [
+            Path("/tmp/btc_fred_api_baseline") / asset_id,
+            Path("/tmp/btc_fred_api_baseline") / output_dir.name,
+        ]
+    )
+    for candidate in candidates:
+        if (
+            candidate
+            and (candidate / "latest_forecast.csv").exists()
+            and (candidate / "model_leaderboard.csv").exists()
+            and valid_fred_fallback_baseline(candidate)
+        ):
+            return candidate
+    return None
+
+
+def _primary_selected_model(latest: pd.DataFrame) -> str:
+    if latest.empty:
+        return ""
+    primary = latest[latest["is_primary_objective"].astype(str).str.lower().eq("true")]
+    row = primary.iloc[0] if not primary.empty else latest.iloc[0]
+    return str(row.get("selected_model", ""))
+
+
+def _official_accuracy(leaderboard: pd.DataFrame, selected_model: str) -> float:
+    official = leaderboard[(leaderboard["horizon"] == 30) & (leaderboard["window_type"] == "official_monthly")].copy()
+    if official.empty:
+        return np.nan
+    if selected_model and selected_model != "no_valid_edge":
+        selected = official[official["model"].astype(str) == selected_model]
+        if not selected.empty:
+            return float(selected["directional_accuracy"].iloc[0])
+    return float(official.sort_values("rank").iloc[0]["directional_accuracy"])
+
+
+def fred_vs_fallback_summary(
+    run_id: str,
+    output_dir: Path,
+    baseline_dir: Optional[Path],
+    latest: pd.DataFrame,
+    leaderboard: pd.DataFrame,
+    availability: pd.DataFrame,
+    macro_candidate_report: pd.DataFrame,
+) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    fred_rows = availability[availability["dataset"].astype(str).eq("fred_macro_api")]
+    fallback_rows = availability[availability["dataset"].astype(str).eq("fred_macro")]
+    fred_status = str(fred_rows["status"].iloc[0]) if not fred_rows.empty else "unknown"
+    fallback_used = bool(not fallback_rows.empty and fallback_rows["status"].astype(str).eq("worked").any())
+    selected_after = _primary_selected_model(latest)
+    accuracy_after = _official_accuracy(leaderboard, selected_after)
+    best_macro = macro_candidate_report.sort_values(
+        ["directional_accuracy", "tc_adjusted_return"],
+        ascending=[False, False],
+        na_position="last",
+    ).head(1)
+    best_macro_name = ""
+    best_macro_accuracy = np.nan
+    if not best_macro.empty:
+        brow = best_macro.iloc[0]
+        best_macro_name = f"{brow['candidate_feature_set']} / {brow['model_name']}"
+        best_macro_accuracy = brow.get("directional_accuracy", np.nan)
+
+    baseline = _baseline_dir_for_asset(output_dir, baseline_dir, asset_id)
+    selected_before = ""
+    accuracy_before = np.nan
+    promotion_changed = False
+    notes = []
+    if baseline is None:
+        notes.append("baseline_unavailable")
+    else:
+        before_latest = _read_optional_csv(baseline / "latest_forecast.csv")
+        before_leaderboard = _read_optional_csv(baseline / "model_leaderboard.csv")
+        selected_before = _primary_selected_model(before_latest)
+        accuracy_before = _official_accuracy(before_leaderboard, selected_before)
+        before_asset = _read_optional_csv(baseline / "csv" / "asset_feature_set_leaderboard.csv")
+        before_macro = before_asset[before_asset["candidate_feature_set"].astype(str).isin(macro_candidate_names(asset_id))] if not before_asset.empty else pd.DataFrame()
+        before_promoted = bool(not before_macro.empty and before_macro["promotion_eligible"].astype(str).str.lower().eq("true").any())
+        after_promoted = bool(not macro_candidate_report.empty and macro_candidate_report["promotion_decision"].astype(str).eq("promote").any())
+        promotion_changed = before_promoted != after_promoted
+        if selected_before == selected_after and not promotion_changed:
+            notes.append("live_fred_did_not_change_selected_model_or_promotion")
+        else:
+            notes.append("live_fred_changed_selection_or_promotion")
+
+    return pd.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "fred_api_status": fred_status,
+                "fallback_used": fallback_used,
+                "selected_model_before": selected_before,
+                "selected_model_after": selected_after,
+                "accuracy_before": accuracy_before,
+                "accuracy_after": accuracy_after,
+                "accuracy_delta": float(accuracy_after - accuracy_before) if pd.notna(accuracy_before) and pd.notna(accuracy_after) else np.nan,
+                "best_macro_candidate": best_macro_name,
+                "best_macro_candidate_accuracy": best_macro_accuracy,
+                "promotion_changed": promotion_changed,
+                "notes": "; ".join(notes),
+            }
+        ]
+    )
 
 
 def latest_signal_interpretation_frame(
@@ -3353,9 +3660,30 @@ def write_diagnostics(
         asset_policy["asset_feature_set_leaderboard.csv"],
     )
     write_schema_csv("latest_signal_interpretation.csv", latest_interpretation, output_dir)
+    feature_signal_frame = feature_signal_diagnostics(run_id, raw, feature_result, config)
+    factor_quality_frame = pruning["factor_quality_scorecard.csv"]
+    macro_candidate_frame = macro_candidate_impact_report(run_id, asset_policy["asset_feature_set_leaderboard.csv"])
+    fred_impact_frame = fred_macro_impact_report(
+        run_id,
+        raw,
+        feature_result,
+        config,
+        base_outputs["data_availability.csv"],
+        feature_signal_frame,
+        factor_quality_frame,
+    )
+    fred_summary_frame = fred_vs_fallback_summary(
+        run_id,
+        output_dir,
+        baseline_dir,
+        latest,
+        base_outputs["model_leaderboard.csv"],
+        base_outputs["data_availability.csv"],
+        macro_candidate_frame,
+    )
     diagnostics = {
         "model_rejection_reasons.csv": model_rejection_reasons(base_outputs["backtest_summary.csv"], selected_model),
-        "feature_signal_diagnostics.csv": feature_signal_diagnostics(run_id, raw, feature_result, config),
+        "feature_signal_diagnostics.csv": feature_signal_frame,
         "feature_group_ablation.csv": feature_group_ablation(run_id, raw, feature_result, config, quick=quick),
         "model_regime_breakdown.csv": model_regime_breakdown(
             run_id,
@@ -3371,6 +3699,9 @@ def write_diagnostics(
         "polymarket_impact.csv": polymarket_impact(run_id, raw, feature_result, config, quick=quick),
         **pruning,
         **asset_policy,
+        "fred_macro_impact_report.csv": fred_impact_frame,
+        "macro_candidate_impact_report.csv": macro_candidate_frame,
+        "fred_vs_fallback_summary.csv": fred_summary_frame,
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)

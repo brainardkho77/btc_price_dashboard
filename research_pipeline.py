@@ -22,14 +22,16 @@ import requests
 
 from data_sources import (
     CACHE_DIR,
+    FRED_SERIES,
     USER_AGENT,
     fetch_coinmetrics,
     fetch_fear_greed,
     fetch_fred,
-    fetch_fred_api,
+    fetch_fred_api_detailed,
     fetch_market_proxies,
     fetch_yahoo_chart,
     fred_api_key_configured,
+    sanitize_fred_error,
 )
 from features import make_features
 from research_config import (
@@ -253,6 +255,50 @@ def _availability_record(
         "is_used_in_model": bool(spec.is_used_in_model if used_override is None else used_override),
         "revision_warning": spec.revision_warning,
     }
+
+
+def _fred_series_availability_record(
+    run_id: str,
+    generated_at: str,
+    base_spec: SourceSpec,
+    detail: dict,
+    *,
+    used: bool,
+) -> dict:
+    status = str(detail.get("status", "failed"))
+    series_id = str(detail.get("series_id", ""))
+    series_name = str(detail.get("series_name", ""))
+    return {
+        "run_id": run_id,
+        "generated_at": generated_at,
+        "source": base_spec.source,
+        "endpoint": base_spec.endpoint,
+        "dataset": f"{base_spec.dataset}:{series_id}" if series_id else base_spec.dataset,
+        "status": status,
+        "requested_fields": series_name,
+        "available_fields": series_name if status == "worked" else "",
+        "rows": int(detail.get("rows", 0) or 0),
+        "first_date": str(detail.get("first_date", "") or ""),
+        "last_date": str(detail.get("last_date", "") or ""),
+        "failure_reason": sanitize_fred_error(detail.get("failure_reason", "")),
+        "is_used_in_model": bool(used and status == "worked"),
+        "revision_warning": base_spec.revision_warning,
+    }
+
+
+def _fred_series_details(status: str, failure_reason: str = "") -> List[dict]:
+    return [
+        {
+            "series_id": series_id,
+            "series_name": series_name,
+            "status": status,
+            "rows": 0,
+            "first_date": "",
+            "last_date": "",
+            "failure_reason": sanitize_fred_error(failure_reason),
+        }
+        for series_id, series_name in FRED_SERIES.items()
+    ]
 
 
 def initial_data_availability(run_id: str, generated_at: str, source_specs: Optional[Sequence[SourceSpec]] = None) -> pd.DataFrame:
@@ -1466,18 +1512,17 @@ def load_research_data(
             "Polymarket monthly ladder data is loaded for diagnostics only; it is excluded from official model selection unless future validation gates pass."
         )
 
+    fred_api_spec = _source_spec("fred_macro_api", source_specs)
     if fred_api_key_configured():
-        fred_api, record = _load_source(
-            run_id,
-            generated_at,
-            "fred_macro_api",
-            lambda: fetch_fred_api(force=refresh),
-            quick=quick and not refresh,
-            allow_quick_fetch=True,
-            source_specs=source_specs,
-        )
-        records.append(record)
-        if fred_api is not None and not fred_api.empty:
+        try:
+            fred_api, fred_details = fetch_fred_api_detailed(force=refresh)
+            if fred_api is None or fred_api.empty:
+                raise ValueError("FRED API returned no usable rows")
+            records.append(_availability_record(run_id, generated_at, fred_api_spec, "worked", fred_api))
+            records.extend(
+                _fred_series_availability_record(run_id, generated_at, fred_api_spec, detail, used=True)
+                for detail in fred_details
+            )
             frames.append(fred_api)
             records.append(
                 _availability_record(
@@ -1489,7 +1534,22 @@ def load_research_data(
                     used_override=False,
                 )
             )
-        else:
+        except Exception as exc:
+            reason = sanitize_fred_error(exc)
+            records.append(
+                _availability_record(
+                    run_id,
+                    generated_at,
+                    fred_api_spec,
+                    "failed",
+                    failure_reason=reason,
+                    used_override=False,
+                )
+            )
+            records.extend(
+                _fred_series_availability_record(run_id, generated_at, fred_api_spec, detail, used=False)
+                for detail in _fred_series_details("failed", reason)
+            )
             fred_fallback, record = _load_source(
                 run_id,
                 generated_at,
@@ -1503,15 +1563,20 @@ def load_research_data(
             if fred_fallback is not None and not fred_fallback.empty:
                 frames.append(fred_fallback)
     else:
+        missing_reason = "FRED_API_KEY is not set; FRED API was not attempted."
         records.append(
             _availability_record(
                 run_id,
                 generated_at,
-                _source_spec("fred_macro_api", source_specs),
+                fred_api_spec,
                 "skipped",
-                failure_reason="FRED_API_KEY is not set; FRED API was not attempted.",
+                failure_reason=missing_reason,
                 used_override=False,
             )
+        )
+        records.extend(
+            _fred_series_availability_record(run_id, generated_at, fred_api_spec, detail, used=False)
+            for detail in _fred_series_details("skipped", missing_reason)
         )
         fred_fallback, record = _load_source(
             run_id,

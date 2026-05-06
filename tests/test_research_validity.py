@@ -9,7 +9,8 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import research_pipeline as rp
 from research_config import ResearchConfig, build_source_specs, get_asset_config
-from data_sources import FRED_SERIES, fred_api_key_configured
+import data_sources
+from data_sources import FRED_SERIES, fetch_fred_api_series, fred_api_key, fred_api_key_configured, sanitize_fred_error
 from research_pipeline import (
     MANUAL_DERIVATIVE_SPECS,
     _is_monthly_polymarket_event,
@@ -38,9 +39,12 @@ from diagnostic_outputs import (
     derivatives_coverage,
     feature_pruning_report,
     feature_group_for_feature,
+    fred_macro_impact_report,
+    fred_vs_fallback_summary,
     high_confidence_signal_floor,
     is_official_long_policy_allowed,
     latest_signal_interpretation_frame,
+    macro_candidate_impact_report,
     select_nested_pruned_features,
     sol_stability_candidate_pairs,
 )
@@ -141,8 +145,9 @@ def test_sol_source_specs_record_skipped_sources_honestly():
     assert bool(etf["is_used_in_model"]) is False
 
 
-def test_fred_api_key_is_environment_only_and_source_specs_include_fallback(monkeypatch):
+def test_fred_api_key_is_environment_only_and_source_specs_include_fallback(monkeypatch, tmp_path):
     monkeypatch.delenv("FRED_API_KEY", raising=False)
+    monkeypatch.setattr(data_sources, "ROOT", tmp_path)
     assert fred_api_key_configured() is False
     monkeypatch.setenv("FRED_API_KEY", "test_key_from_environment")
     assert fred_api_key_configured() is True
@@ -156,6 +161,39 @@ def test_fred_api_key_is_environment_only_and_source_specs_include_fallback(monk
     assert env_example.read_text(encoding="utf-8").strip() == "FRED_API_KEY="
     assert "DFII10" in FRED_SERIES
     assert "WTREGEN" in FRED_SERIES
+
+
+def test_fred_api_key_can_load_from_ignored_dotenv(monkeypatch, tmp_path):
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    monkeypatch.setattr(data_sources, "ROOT", tmp_path)
+    key_name = "FRED" + "_API_KEY"
+    (tmp_path / ".env").write_text(f"{key_name}=dotenv_secret_value\n", encoding="utf-8")
+    assert fred_api_key() == "dotenv_secret_value"
+    assert fred_api_key_configured() is True
+
+
+def test_fred_api_request_uses_live_endpoint_and_sanitizes_failures(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"observations": [{"date": "2024-01-01", "value": "4.25"}]}
+
+    captured = {}
+
+    def fake_get(url, params, headers, timeout):
+        captured["url"] = url
+        captured["params"] = params
+        captured["headers"] = headers
+        return FakeResponse()
+
+    monkeypatch.setenv("FRED_API_KEY", "secret_value_for_test")
+    monkeypatch.setattr(data_sources.requests, "get", fake_get)
+    series = fetch_fred_api_series("DGS10")
+    assert captured["url"] == "https://api.stlouisfed.org/fred/series/observations"
+    assert captured["params"]["api_key"] == "secret_value_for_test"
+    assert float(series.iloc[0]) == 4.25
+    assert "secret_value_for_test" not in sanitize_fred_error("url?api_key=secret_value_for_test")
 
 
 def test_sol_target_generation_uses_future_sol_prices_only():
@@ -298,6 +336,9 @@ def test_diagnostic_schemas_include_required_outputs():
         "sol_stability_report.csv",
         "signal_policy_report.csv",
         "asset_feature_set_leaderboard.csv",
+        "fred_macro_impact_report.csv",
+        "macro_candidate_impact_report.csv",
+        "fred_vs_fallback_summary.csv",
     ]:
         assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
     assert "latest_signal_interpretation.csv" in OUTPUT_SCHEMAS
@@ -312,6 +353,9 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "passes_stability_check" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_stability_report.csv"]
     assert "active_signal_count" in DIAGNOSTIC_OUTPUT_SCHEMAS["signal_policy_report.csv"]
     assert "promotion_eligible" in DIAGNOSTIC_OUTPUT_SCHEMAS["asset_feature_set_leaderboard.csv"]
+    assert "series_id" in DIAGNOSTIC_OUTPUT_SCHEMAS["fred_macro_impact_report.csv"]
+    assert "tc_adjusted_return" in DIAGNOSTIC_OUTPUT_SCHEMAS["macro_candidate_impact_report.csv"]
+    assert "accuracy_delta" in DIAGNOSTIC_OUTPUT_SCHEMAS["fred_vs_fallback_summary.csv"]
 
 
 def test_btc_up_down_slice_creation_uses_known_btc_history():
@@ -322,6 +366,114 @@ def test_btc_up_down_slice_creation_uses_known_btc_history():
     assert masks["BTC-up"].any()
     assert masks["BTC-down"].any()
     assert not (masks["BTC-up"] & masks["BTC-down"]).any()
+
+
+def test_fred_macro_impact_report_schema_and_series_status():
+    config = ResearchConfig()
+    raw = synthetic_research_raw(rows=900)
+    feature_result = build_features(raw, config)
+    fred_audit = feature_result.feature_audit[feature_result.feature_audit["source"].str.startswith("fred_macro")]
+    feature_name = str(fred_audit.iloc[0]["feature_name"])
+    availability = pd.DataFrame(
+        [
+            {
+                "run_id": "btc_research_test",
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "source": "FRED API",
+                "endpoint": "https://api.stlouisfed.org/fred/series/observations",
+                "dataset": "fred_macro_api:DGS10",
+                "status": "worked",
+                "requested_fields": "us_10y_yield",
+                "available_fields": "us_10y_yield",
+                "rows": 900,
+                "first_date": "2018-01-01",
+                "last_date": "2020-06-18",
+                "failure_reason": "",
+                "is_used_in_model": True,
+                "revision_warning": "FRED API data is revised historical data, not point-in-time vintages.",
+            }
+        ]
+    )
+    feature_signal = pd.DataFrame(
+        [
+            {
+                "feature_name": feature_name,
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "information_coefficient": 0.12,
+                "ic_p_value": 0.05,
+            }
+        ]
+    )
+    factor_quality = pd.DataFrame(
+        [
+            {
+                "feature_name": feature_name,
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "keep_candidate": True,
+            }
+        ]
+    )
+    report = fred_macro_impact_report("btc_research_test", raw, feature_result, config, availability, feature_signal, factor_quality)
+    validate_frame("fred_macro_impact_report.csv", report)
+    assert not report.empty
+    assert "DGS10" in set(report["series_id"])
+    assert report["release_lag_days"].isin([2, 30]).all()
+
+
+def test_macro_candidate_and_fred_summary_reports_validate_without_baseline(tmp_path):
+    asset_rows = pd.DataFrame(
+        [
+            {
+                "candidate_feature_set": "btc_dollar_rates_cycle",
+                "model_name": "logistic_linear",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "n_features": 8,
+                "n_samples": 36,
+                "directional_accuracy": 0.57,
+                "balanced_accuracy": 0.56,
+                "brier_score": 0.24,
+                "calibration_error": 0.08,
+                "net_return": 1.2,
+                "sharpe": 0.8,
+                "max_drawdown": -0.2,
+                "bootstrap_ci_low": 0.48,
+                "bootstrap_ci_high": 0.66,
+                "permutation_p_value": 0.18,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": False,
+                "beats_random_baseline": True,
+                "promotion_eligible": False,
+                "rejection_reason": "failed_bootstrap_or_permutation_stability_check",
+            }
+        ]
+    )
+    macro_report = macro_candidate_impact_report("btc_research_test", asset_rows)
+    validate_frame("macro_candidate_impact_report.csv", macro_report)
+    latest = pd.DataFrame([{"is_primary_objective": True, "selected_model": "no_valid_edge"}])
+    leaderboard = pd.DataFrame(
+        [
+            {
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "model": "momentum_90d",
+                "rank": 1,
+                "directional_accuracy": 0.55,
+            }
+        ]
+    )
+    availability = pd.DataFrame(
+        [
+            {"dataset": "fred_macro_api", "status": "worked"},
+            {"dataset": "fred_macro", "status": "skipped"},
+        ]
+    )
+    summary = fred_vs_fallback_summary("unit_research_test", tmp_path, None, latest, leaderboard, availability, macro_report)
+    validate_frame("fred_vs_fallback_summary.csv", summary)
+    assert summary.iloc[0]["notes"] == "baseline_unavailable"
 
 
 def test_sol_stability_report_candidate_pairs_include_selected_model():
@@ -410,7 +562,15 @@ def test_feature_pruning_report_marks_unstable_candidates_not_promoted():
 
 
 def test_streamlit_optional_new_diagnostics_can_be_empty_with_schema():
-    for filename in ["feature_pruning_report.csv", "sol_stability_report.csv", "signal_policy_report.csv", "asset_feature_set_leaderboard.csv"]:
+    for filename in [
+        "feature_pruning_report.csv",
+        "sol_stability_report.csv",
+        "signal_policy_report.csv",
+        "asset_feature_set_leaderboard.csv",
+        "fred_macro_impact_report.csv",
+        "macro_candidate_impact_report.csv",
+        "fred_vs_fallback_summary.csv",
+    ]:
         frame = empty_diagnostic_frame(filename)
         validate_frame(filename, frame)
     validate_frame("latest_signal_interpretation.csv", empty_output_frame("latest_signal_interpretation.csv"))

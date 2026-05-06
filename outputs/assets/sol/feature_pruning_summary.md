@@ -2,7 +2,7 @@
 
 ## Run Summary
 - Asset: `SOL`
-- Run ID: `sol_research_20260506T111057Z`
+- Run ID: `sol_research_20260506T132122Z`
 - Selected model: `logistic_linear`
 - Signal: `neutral`
 - Reliability: `Medium confidence`

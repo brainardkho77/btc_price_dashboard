@@ -1,0 +1,2 @@
+run_id,asset_id,fred_api_status,fallback_used,selected_model_before,selected_model_after,accuracy_before,accuracy_after,accuracy_delta,best_macro_candidate,best_macro_candidate_accuracy,promotion_changed,notes
+sol_research_20260506T132122Z,sol,worked,False,logistic_linear,logistic_linear,0.6944444444444444,0.6944444444444444,0.0,sol_dollar_rates_only / random_forest,0.6944444444444444,False,live_fred_did_not_change_selected_model_or_promotion

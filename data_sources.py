@@ -4,6 +4,7 @@ import io
 import json
 import math
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,8 +80,52 @@ class DataSourceError(RuntimeError):
     pass
 
 
+def _read_dotenv_secret(name: str) -> str:
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return ""
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            if key.strip() == name:
+                return value.strip().strip("'\"")
+    except OSError:
+        return ""
+    return ""
+
+
+def _read_streamlit_secret(name: str) -> str:
+    try:
+        import streamlit as st  # type: ignore
+
+        return str(st.secrets.get(name, "")).strip()
+    except Exception:
+        return ""
+
+
+def fred_api_key() -> str:
+    return (
+        os.environ.get("FRED_API_KEY", "").strip()
+        or _read_dotenv_secret("FRED_API_KEY")
+        or _read_streamlit_secret("FRED_API_KEY")
+    )
+
+
 def fred_api_key_configured() -> bool:
-    return bool(os.environ.get("FRED_API_KEY", "").strip())
+    return bool(fred_api_key())
+
+
+def sanitize_fred_error(message: object) -> str:
+    text = str(message)
+    key = fred_api_key()
+    if key:
+        text = text.replace(key, "[redacted]")
+    text = re.sub(r"([?&]api_key=)[^&\\s]+", r"\1[redacted]", text)
+    text = re.sub(r"(Authorization:\\s*Bearer\\s+)[^\\s]+", r"\1[redacted]", text, flags=re.IGNORECASE)
+    return text[:500]
 
 
 def _cache_path(name: str) -> Path:
@@ -294,7 +339,7 @@ def fetch_fred_graph_csv_series(series_id: str) -> pd.Series:
 
 
 def fetch_fred_api_series(series_id: str, start: str = "2014-01-01") -> pd.Series:
-    api_key = os.environ.get("FRED_API_KEY", "").strip()
+    api_key = fred_api_key()
     if not api_key:
         raise DataSourceError("FRED_API_KEY is not set.")
     response = requests.get(
@@ -321,6 +366,69 @@ def fetch_fred_api_series(series_id: str, start: str = "2014-01-01") -> pd.Serie
     return _parse_fred_observations(frame[["observation_date", series_id]], series_id)
 
 
+def _fred_series_detail(series_id: str, column: str, status: str, series: Optional[pd.Series] = None, failure_reason: str = "") -> dict:
+    valid = series.dropna() if series is not None else pd.Series(dtype=float)
+    return {
+        "series_id": series_id,
+        "series_name": column,
+        "status": status,
+        "rows": int(len(valid)),
+        "first_date": valid.index.min().date().isoformat() if len(valid) else "",
+        "last_date": valid.index.max().date().isoformat() if len(valid) else "",
+        "failure_reason": sanitize_fred_error(failure_reason),
+    }
+
+
+def _fred_detail_path(name: str) -> Path:
+    return _meta_path(f"{name}_series_status")
+
+
+def _read_fred_details(name: str, frame: pd.DataFrame) -> list[dict]:
+    path = _fred_detail_path(name)
+    if path.exists():
+        try:
+            details = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(details, list):
+                return details
+        except json.JSONDecodeError:
+            pass
+    details = []
+    for series_id, column in FRED_SERIES.items():
+        if column in frame:
+            details.append(_fred_series_detail(series_id, column, "worked", frame[column]))
+        else:
+            details.append(_fred_series_detail(series_id, column, "failed", failure_reason="Series not present in cached FRED API data."))
+    return details
+
+
+def fetch_fred_api_detailed(force: bool = False) -> tuple[pd.DataFrame, list[dict]]:
+    cache_name = "fred_macro_api"
+    if not force:
+        cached = _read_cached(cache_name)
+        if cached is not None and not cached.empty:
+            return cached, _read_fred_details(cache_name, cached)
+
+    frames = []
+    details = []
+    for series_id, column in FRED_SERIES.items():
+        try:
+            series = fetch_fred_api_series(series_id).rename(column)
+            frames.append(series.to_frame())
+            details.append(_fred_series_detail(series_id, column, "worked", series))
+        except Exception as exc:
+            details.append(_fred_series_detail(series_id, column, "failed", failure_reason=exc))
+        time.sleep(0.1)
+
+    if not frames:
+        _fred_detail_path(cache_name).write_text(json.dumps(details, indent=2), encoding="utf-8")
+        raise DataSourceError("FRED API returned no usable series.")
+
+    frame = pd.concat(frames, axis=1).sort_index()
+    _write_cached(cache_name, frame)
+    _fred_detail_path(cache_name).write_text(json.dumps(details, indent=2), encoding="utf-8")
+    return frame, details
+
+
 def _fetch_fred_series_map(series_fetcher: Callable[[str], pd.Series]) -> pd.DataFrame:
     frames = []
     failures = []
@@ -337,10 +445,8 @@ def _fetch_fred_series_map(series_fetcher: Callable[[str], pd.Series]) -> pd.Dat
 
 
 def fetch_fred_api(force: bool = False) -> pd.DataFrame:
-    def _fetch() -> pd.DataFrame:
-        return _fetch_fred_series_map(fetch_fred_api_series)
-
-    return fetch_with_cache("fred_macro_api", _fetch, force=force, max_age_hours=24)
+    frame, _ = fetch_fred_api_detailed(force=force)
+    return frame
 
 
 def fetch_fred(force: bool = False) -> pd.DataFrame:

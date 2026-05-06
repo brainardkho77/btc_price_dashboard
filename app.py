@@ -87,6 +87,9 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "sol_stability_report": read_diagnostic("sol_stability_report.csv"),
         "signal_policy_report": read_diagnostic("signal_policy_report.csv"),
         "asset_feature_set_leaderboard": read_diagnostic("asset_feature_set_leaderboard.csv"),
+        "fred_macro_impact_report": read_diagnostic("fred_macro_impact_report.csv"),
+        "macro_candidate_impact_report": read_diagnostic("macro_candidate_impact_report.csv"),
+        "fred_vs_fallback_summary": read_diagnostic("fred_vs_fallback_summary.csv"),
     }
     data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     data["diagnostic_warnings"] = diagnostic_warnings
@@ -206,6 +209,9 @@ feature_pruning_report = outputs["feature_pruning_report"]
 sol_stability_report = outputs["sol_stability_report"]
 signal_policy_report = outputs["signal_policy_report"]
 asset_feature_set_leaderboard = outputs["asset_feature_set_leaderboard"]
+fred_macro_impact = outputs["fred_macro_impact_report"]
+macro_candidate_impact = outputs["macro_candidate_impact_report"]
+fred_vs_fallback = outputs["fred_vs_fallback_summary"]
 manifest = outputs["manifest"]
 asset_name = str(manifest.get("asset_name") or asset_config.display_name)
 
@@ -807,6 +813,86 @@ with data_tab:
     status_counts = availability["status"].value_counts().rename_axis("status").reset_index(name="count")
     st.dataframe(status_counts, width="stretch", hide_index=True)
     st.dataframe(availability, width="stretch", hide_index=True)
+
+    st.subheader("Macro Data Status")
+    if fred_vs_fallback.empty:
+        st.warning("No precomputed FRED macro impact summary is available.")
+    else:
+        fred_summary_row = fred_vs_fallback.head(1).iloc[0]
+        status_cols = st.columns(5)
+        status_cols[0].metric("FRED API", str(fred_summary_row.get("fred_api_status", "unknown")))
+        status_cols[1].metric("Fallback used", "Yes" if bool(fred_summary_row.get("fallback_used", False)) else "No")
+        status_cols[2].metric("Promotion changed", "Yes" if bool(fred_summary_row.get("promotion_changed", False)) else "No")
+        loaded_series = 0
+        if not fred_macro_impact.empty and "series_id" in fred_macro_impact:
+            loaded_series = int(
+                fred_macro_impact[fred_macro_impact["source_status"].astype(str).eq("worked")]["series_id"].nunique()
+            )
+        status_cols[3].metric("FRED series loaded", str(loaded_series))
+        status_cols[4].metric("Best macro accuracy", fmt_pct(fred_summary_row.get("best_macro_candidate_accuracy", pd.NA)))
+        st.caption(str(fred_summary_row.get("notes", "")))
+        st.dataframe(
+            fred_vs_fallback[
+                [
+                    "fred_api_status",
+                    "fallback_used",
+                    "selected_model_before",
+                    "selected_model_after",
+                    "accuracy_before",
+                    "accuracy_after",
+                    "accuracy_delta",
+                    "best_macro_candidate",
+                    "best_macro_candidate_accuracy",
+                    "promotion_changed",
+                    "notes",
+                ]
+            ].style.format(
+                {
+                    "accuracy_before": "{:.1%}",
+                    "accuracy_after": "{:.1%}",
+                    "accuracy_delta": "{:.1%}",
+                    "best_macro_candidate_accuracy": "{:.1%}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    if macro_candidate_impact.empty:
+        st.warning("No precomputed macro candidate impact report is available.")
+    else:
+        st.dataframe(
+            macro_candidate_impact.sort_values(
+                ["directional_accuracy", "tc_adjusted_return"],
+                ascending=[False, False],
+                na_position="last",
+            )[
+                [
+                    "candidate_feature_set",
+                    "model_name",
+                    "n_features",
+                    "n_samples",
+                    "directional_accuracy",
+                    "brier_score",
+                    "calibration_error",
+                    "tc_adjusted_return",
+                    "bootstrap_ci_low",
+                    "permutation_p_value",
+                    "promotion_decision",
+                    "rejection_reason",
+                ]
+            ].head(12).style.format(
+                {
+                    "directional_accuracy": "{:.1%}",
+                    "brier_score": "{:.3f}",
+                    "calibration_error": "{:.3f}",
+                    "tc_adjusted_return": "{:.1%}",
+                    "bootstrap_ci_low": "{:.1%}",
+                    "permutation_p_value": "{:.3f}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
 
     st.subheader("Macro/Liquidity Coverage")
     macro_availability = availability[availability["source"].astype(str).str.contains("FRED", case=False, na=False)].copy()

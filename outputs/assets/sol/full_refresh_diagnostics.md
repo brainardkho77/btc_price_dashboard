@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `sol_research_20260506T111057Z`
+- Full refresh run ID: `sol_research_20260506T132122Z`
 - Selected model: `logistic_linear`
 - Signal: `neutral`
 - Reliability: `Medium confidence`

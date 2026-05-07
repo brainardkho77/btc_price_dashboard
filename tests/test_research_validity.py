@@ -49,6 +49,7 @@ from diagnostic_outputs import (
     macro_candidate_impact_report,
     select_nested_pruned_features,
     sol_selection_audit,
+    sol_deployability_audit,
     sol_signal_policy_deployment_check,
     sol_stability_candidate_pairs,
 )
@@ -408,8 +409,10 @@ def test_diagnostic_schemas_include_required_outputs():
         "fred_vs_fallback_summary.csv",
         "sol_selection_audit.csv",
         "sol_signal_policy_deployment.csv",
+        "sol_deployability_audit.csv",
         "btc_no_edge_drilldown.csv",
         "asset_deployability_report.csv",
+        "sol_deployability_audit.csv",
     ]:
         assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
     assert "latest_signal_interpretation.csv" in OUTPUT_SCHEMAS
@@ -431,6 +434,7 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "can_change_selected_model" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_signal_policy_deployment.csv"]
     assert "rejection_category" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_no_edge_drilldown.csv"]
     assert "equity_chart_role" in DIAGNOSTIC_OUTPUT_SCHEMAS["asset_deployability_report.csv"]
+    assert "unavailable_gates" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_deployability_audit.csv"]
 
 
 def test_btc_up_down_slice_creation_uses_known_btc_history():
@@ -682,6 +686,179 @@ def test_sol_signal_policy_deployment_cannot_change_model_and_flags_limited_supp
     assert bool(row["enough_active_signals"]) is True
     assert bool(row["high_confidence_active_floor_met"]) is False
     assert row["audit_conclusion"] == "useful_interpretation_limited_active_support"
+
+
+def _sol_feature_candidate(feature_set="all_features", model_name="logistic_linear", **overrides):
+    row = {
+        "run_id": "sol_research_test",
+        "asset_id": "sol",
+        "horizon": 30,
+        "window_type": "official_monthly",
+        "candidate_feature_set": feature_set,
+        "model_name": model_name,
+        "feature_selection_method": "all_features_reference",
+        "n_features": 100,
+        "n_samples": 36,
+        "directional_accuracy": 0.694,
+        "balanced_accuracy": 0.694,
+        "brier_score": 0.25,
+        "calibration_error": 0.11,
+        "sharpe": 1.1,
+        "max_drawdown": -0.37,
+        "net_return": 9.80,
+        "beats_buy_hold": True,
+        "beats_momentum_30d": True,
+        "beats_momentum_90d": True,
+        "beats_random_baseline": True,
+        "beats_current_reference": False,
+        "material_worsening": False,
+        "regime_stability_pass": False,
+        "bootstrap_ci_low": np.nan,
+        "bootstrap_ci_high": np.nan,
+        "permutation_p_value": np.nan,
+        "promotion_eligible": False,
+        "reliability_label": "Medium confidence",
+        "window_fingerprint": "",
+        "rejection_reason": "current_all_features_reference",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_sol_deployability_audit_blocks_missing_gate_sources():
+    latest = pd.DataFrame(
+        [
+            {
+                "run_id": "sol_research_test",
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "as_of_date": "2026-01-01",
+                "horizon": 30,
+                "selected_model": "logistic_linear",
+                "signal": "neutral",
+                "predicted_probability_up": 0.44,
+                "expected_return": -0.04,
+                "reliability_label": "Medium confidence",
+                "is_primary_objective": True,
+            }
+        ]
+    )
+    interp = pd.DataFrame(
+        [
+            {
+                "selected_model": "logistic_linear",
+                "selected_feature_set": "all_features",
+                "strategy_action": "cash",
+                "risk_label": "Neutral / no edge",
+            }
+        ]
+    )
+    feature_sets = pd.DataFrame([_sol_feature_candidate()])
+    out = sol_deployability_audit(
+        "sol_research_test",
+        "2026-01-01T00:00:00+00:00",
+        latest,
+        interp,
+        feature_sets,
+        empty_diagnostic_frame("signal_policy_report.csv"),
+        empty_diagnostic_frame("sol_stability_report.csv"),
+    )
+    validate_frame("sol_deployability_audit.csv", out)
+    row = out.iloc[0]
+    assert bool(row["is_selected_model"]) is True
+    assert row["deployability_decision"] == "diagnostic_only"
+    assert "bootstrap_ci_low_above_50" in row["unavailable_gates"]
+    assert "signal_policy_available" in row["failed_gates"]
+
+
+def test_sol_deployability_audit_only_includes_available_challengers():
+    latest = pd.DataFrame(
+        [
+            {
+                "horizon": 30,
+                "selected_model": "logistic_linear",
+                "signal": "neutral",
+                "predicted_probability_up": 0.44,
+                "expected_return": -0.04,
+                "is_primary_objective": True,
+            }
+        ]
+    )
+    interp = pd.DataFrame([{"selected_model": "logistic_linear", "selected_feature_set": "all_features", "strategy_action": "cash", "risk_label": "Neutral / no edge"}])
+    feature_sets = pd.DataFrame(
+        [
+            _sol_feature_candidate(),
+            _sol_feature_candidate("price_plus_macro", "logistic_linear", bootstrap_ci_low=0.56, permutation_p_value=0.03),
+        ]
+    )
+    out = sol_deployability_audit(
+        "sol_research_test",
+        "2026-01-01T00:00:00+00:00",
+        latest,
+        interp,
+        feature_sets,
+        empty_diagnostic_frame("signal_policy_report.csv"),
+        empty_diagnostic_frame("sol_stability_report.csv"),
+    )
+    assert set(out["feature_set"]) == {"all_features", "price_plus_macro"}
+
+
+def test_sol_deployability_requires_latest_long_action_and_high_active_floor():
+    latest = pd.DataFrame(
+        [
+            {
+                "horizon": 30,
+                "selected_model": "logistic_linear",
+                "signal": "neutral",
+                "predicted_probability_up": 0.44,
+                "expected_return": -0.04,
+                "is_primary_objective": True,
+            }
+        ]
+    )
+    interp = pd.DataFrame([{"selected_model": "logistic_linear", "selected_feature_set": "all_features", "strategy_action": "cash", "risk_label": "Neutral / no edge"}])
+    feature_sets = pd.DataFrame(
+        [
+            _sol_feature_candidate(
+                bootstrap_ci_low=0.56,
+                permutation_p_value=0.03,
+                regime_stability_pass=True,
+            )
+        ]
+    )
+    policy = pd.DataFrame(
+        [
+            {
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "all_features",
+                "model_name": "logistic_linear",
+                "n_samples": 36,
+                "policy_source": "train_calibration_only",
+                "active_signal_count": 12,
+                "active_coverage": 0.33,
+                "active_hit_rate": 0.75,
+                "missed_up_month_rate": 0.5,
+                "valid_signal_policy": True,
+            }
+        ]
+    )
+    stability = pd.DataFrame(
+        [
+            {
+                "candidate_feature_set": "all_features",
+                "model_name": "logistic_linear",
+                "period_slice": slice_name,
+                "directional_accuracy": 0.65,
+                "passes_stability_check": True,
+            }
+            for slice_name in ["BTC-up", "BTC-down", "2023-2024", "2024-present"]
+        ]
+    )
+    out = sol_deployability_audit("sol_research_test", "2026-01-01T00:00:00+00:00", latest, interp, feature_sets, policy, stability)
+    row = out.iloc[0]
+    assert row["deployability_decision"] == "diagnostic_only"
+    assert "high_confidence_active_signal_floor" in row["failed_gates"]
+    assert "latest_deployable_action" in row["failed_gates"]
 
 
 def test_btc_no_edge_drilldown_classifies_target_candidates():

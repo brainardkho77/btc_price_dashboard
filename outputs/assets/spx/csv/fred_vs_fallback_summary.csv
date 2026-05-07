@@ -1,2 +1,2 @@
 run_id,asset_id,fred_api_status,fallback_used,selected_model_before,selected_model_after,accuracy_before,accuracy_after,accuracy_delta,best_macro_candidate,best_macro_candidate_accuracy,promotion_changed,notes
-spx_research_20260507T130913Z,spx,worked,False,,no_valid_edge,,0.6767676767676768,,spx_macro_risk / logistic_linear,0.6767676767676768,False,baseline_unavailable
+spx_research_20260507T144238Z,spx,worked,False,,no_valid_edge,,0.6767676767676768,,spx_macro_risk / logistic_linear,0.6767676767676768,False,baseline_unavailable

@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `btc_research_20260507T123724Z`
+- Full refresh run ID: `btc_research_20260507T141045Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -11,7 +11,7 @@
 Quick mode used `2018-01-01` to `2026-05-05` with `75` 30d official samples and selected `random_forest`. Full refresh used `2015-01-01` to `2026-05-07` with `100` 30d official samples and selected `no_valid_edge`. The quick edge disappeared because the broader 2015+ sample added regimes where the ML models did not beat the 90d momentum baseline or the full baseline set after costs.
 
 ## 30d Official Model Comparison
-- Best ML model: `logistic_linear` with directional accuracy `49.0%`
+- Best ML model: `logistic_linear` with directional accuracy `50.0%`
 - Best baseline: `momentum_90d` with directional accuracy `55.0%`
 - Baselines that beat the best ML model: `momentum_90d, momentum_30d, buy_hold_direction`
 
@@ -41,10 +41,10 @@ Validation gates failed by ML model:
 - `logistic_linear` in `post_halving`: samples `24`, accuracy `62.5%`, net return `606.1%`, reliability `Low confidence`
 - `buy_hold_direction` in `post_halving`: samples `24`, accuracy `62.5%`, net return `662.4%`, reliability `Low confidence`
 - `momentum_90d` in `high_rate`: samples `66`, accuracy `62.1%`, net return `267.2%`, reliability `Low confidence`
+- `logistic_linear` in `post_etf`: samples `27`, accuracy `59.3%`, net return `114.5%`, reliability `Low confidence`
 - `momentum_90d` in `bear_market`: samples `45`, accuracy `57.8%`, net return `64.0%`, reliability `Low confidence`
 - `momentum_30d` in `low_rate`: samples `34`, accuracy `55.9%`, net return `361.2%`, reliability `Low confidence`
 - `random_forest` in `post_etf`: samples `27`, accuracy `55.6%`, net return `99.0%`, reliability `Low confidence`
-- `logistic_linear` in `post_etf`: samples `27`, accuracy `55.6%`, net return `76.6%`, reliability `Low confidence`
 - `momentum_90d` in `post_etf`: samples `27`, accuracy `55.6%`, net return `122.8%`, reliability `Low confidence`
 - `momentum_30d` in `pre_etf`: samples `73`, accuracy `54.8%`, net return `353.1%`, reliability `Low confidence`
 

@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `spx_research_20260507T130913Z`
+- Run ID: `spx_research_20260507T144238Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -27,11 +27,11 @@
 - It is not selected unless it passes the official 30d selection rules in the main leaderboard.
 
 ## Feature Group Stability
+- `all_features` / `hgb`: `12` stable slices
 - `all_features` / `logistic_linear`: `12` stable slices
 - `all_features` / `random_forest`: `12` stable slices
 - `dollar_rates_only` / `logistic_linear`: `12` stable slices
 - `price_momentum_only` / `random_forest`: `12` stable slices
-- `all_features` / `hgb`: `11` stable slices
 
 ## Conclusion
 - Derivatives improved 30d official diagnostics: `False`

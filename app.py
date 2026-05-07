@@ -59,6 +59,19 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
             diagnostic_warnings.append(f"Invalid diagnostic file outputs/csv/{filename}: {exc}")
             return empty_diagnostic_frame(filename)
 
+    def read_optional_root_diagnostic(filename: str) -> pd.DataFrame:
+        path = output_dir / filename
+        if not path.exists():
+            diagnostic_warnings.append(f"Missing optional diagnostic file: outputs/{filename}")
+            return empty_diagnostic_frame(filename)
+        try:
+            frame = pd.read_csv(path)
+            validate_frame(filename, frame)
+            return frame
+        except Exception as exc:
+            diagnostic_warnings.append(f"Invalid optional diagnostic file outputs/{filename}: {exc}")
+            return empty_diagnostic_frame(filename)
+
     data = {
         "leaderboard": pd.read_csv(output_dir / "model_leaderboard.csv"),
         "backtest_summary": pd.read_csv(output_dir / "backtest_summary.csv"),
@@ -91,6 +104,11 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "macro_candidate_impact_report": read_diagnostic("macro_candidate_impact_report.csv"),
         "fred_vs_fallback_summary": read_diagnostic("fred_vs_fallback_summary.csv"),
         "asset_deployability_report": read_diagnostic("asset_deployability_report.csv"),
+        "sol_deployability_audit": (
+            read_optional_root_diagnostic("sol_deployability_audit.csv")
+            if output_dir.name == "sol"
+            else empty_diagnostic_frame("sol_deployability_audit.csv")
+        ),
         "sol_selection_audit": read_diagnostic("sol_selection_audit.csv"),
         "sol_signal_policy_deployment": read_diagnostic("sol_signal_policy_deployment.csv"),
         "btc_no_edge_drilldown": read_diagnostic("btc_no_edge_drilldown.csv"),
@@ -277,6 +295,7 @@ fred_vs_fallback = outputs["fred_vs_fallback_summary"]
 asset_deployability = outputs["asset_deployability_report"]
 sol_selection_audit = outputs["sol_selection_audit"]
 sol_signal_policy_deployment = outputs["sol_signal_policy_deployment"]
+sol_deployability_audit = outputs["sol_deployability_audit"]
 btc_no_edge_drilldown_frame = outputs["btc_no_edge_drilldown"]
 manifest = outputs["manifest"]
 asset_name = str(manifest.get("asset_name") or asset_config.display_name)
@@ -303,10 +322,14 @@ top[4].metric("Run mode", "Quick" if manifest.get("quick_mode") else "Refresh")
 
 forecast_cols = st.columns(4)
 no_valid_edge = str(primary_row["selected_model"]) == "no_valid_edge"
+deployability_decision = str(deployability_row.get("deployability_decision", ""))
+actionable_forecast = deployability_decision == "deployable"
 forecast_cols[0].metric(f"{asset_name} spot", fmt_usd(primary_row["current_price"]), str(primary_row["as_of_date"]))
 forecast_cols[1].metric("Probability up", fmt_pct(primary_row["predicted_probability_up"]))
-forecast_cols[2].metric("Expected return", "N/A" if no_valid_edge else fmt_pct(primary_row["expected_return"]))
-forecast_cols[3].metric("Model-implied forecast price", "N/A" if no_valid_edge else fmt_usd(primary_row["model_implied_forecast_price"]))
+forecast_cols[2].metric("Expected return", fmt_pct(primary_row["expected_return"]) if actionable_forecast else "N/A")
+forecast_cols[3].metric("Model-implied forecast price", fmt_usd(primary_row["model_implied_forecast_price"]) if actionable_forecast else "N/A")
+if not actionable_forecast:
+    st.caption("Expected return and model-implied forecast price are hidden as actionable metrics until deployability is validated.")
 
 policy_cols = st.columns(4)
 policy_cols[0].metric("Strategy action", str(signal_interp_row.get("strategy_action", "cash")))
@@ -550,6 +573,74 @@ with signal_tab:
         )
 
     if selected_asset == "sol":
+        st.subheader("SOL Deployability")
+        if sol_deployability_audit.empty:
+            st.warning("No precomputed SOL deployability audit is available. Run python research_run.py --refresh --asset sol first.")
+        else:
+            selected_audit = sol_deployability_audit[sol_deployability_audit["is_selected_model"] == True].head(1)
+            selected_audit_row = selected_audit.iloc[0] if not selected_audit.empty else sol_deployability_audit.iloc[0]
+            challengers = sol_deployability_audit[sol_deployability_audit["is_selected_model"] != True].copy()
+            best_challenger = challengers.sort_values(
+                ["official_accuracy", "after_cost_return", "brier_score"],
+                ascending=[False, False, True],
+                na_position="last",
+            ).head(1)
+            failed_gates = str(selected_audit_row.get("failed_gates", "")).split("; ")
+            unavailable_gates = str(selected_audit_row.get("unavailable_gates", "")).split("; ")
+            main_block = next((gate for gate in failed_gates + unavailable_gates if gate and gate != "nan"), "none")
+            active_signal_value = selected_audit_row.get("active_signal_count", 0)
+            active_signal_count = 0 if pd.isna(active_signal_value) else int(active_signal_value)
+            sol_cols = st.columns(5)
+            sol_cols[0].metric("Deployability", str(selected_audit_row.get("deployability_decision", "n/a")))
+            sol_cols[1].metric("Current action", str(selected_audit_row.get("strategy_action", "cash")))
+            sol_cols[2].metric("Active signals", str(active_signal_count))
+            sol_cols[3].metric("Active hit rate", fmt_pct(selected_audit_row.get("active_hit_rate", pd.NA)))
+            if not best_challenger.empty:
+                sol_cols[4].metric("Best challenger", str(best_challenger.iloc[0]["feature_set"]), fmt_pct(best_challenger.iloc[0]["official_accuracy"]))
+            else:
+                sol_cols[4].metric("Best challenger", "n/a")
+            st.caption(f"Main failed or unavailable gate: {main_block}. {selected_audit_row.get('rejection_or_caution_reason', '')}")
+            st.dataframe(
+                sol_deployability_audit[
+                    [
+                        "feature_set",
+                        "model_name",
+                        "is_selected_model",
+                        "official_accuracy",
+                        "after_cost_return",
+                        "brier_score",
+                        "calibration_error",
+                        "max_drawdown",
+                        "active_signal_count",
+                        "active_coverage",
+                        "active_hit_rate",
+                        "btc_up_accuracy",
+                        "btc_down_accuracy",
+                        "stability_2023_2024",
+                        "stability_2024_present",
+                        "deployability_decision",
+                        "failed_gates",
+                        "unavailable_gates",
+                    ]
+                ].style.format(
+                    {
+                        "official_accuracy": "{:.1%}",
+                        "after_cost_return": "{:.1%}",
+                        "brier_score": "{:.3f}",
+                        "calibration_error": "{:.3f}",
+                        "max_drawdown": "{:.1%}",
+                        "active_coverage": "{:.1%}",
+                        "active_hit_rate": "{:.1%}",
+                        "btc_up_accuracy": "{:.1%}",
+                        "btc_down_accuracy": "{:.1%}",
+                        "stability_2023_2024": "{:.1%}",
+                        "stability_2024_present": "{:.1%}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+
         st.subheader("SOL Selection Audit")
         if sol_selection_audit.empty:
             st.warning("No precomputed SOL selection audit is available.")
@@ -968,8 +1059,8 @@ with no_edge_tab:
 with forecast_tab:
     st.subheader("Latest Precomputed Forecast")
     latest_display = latest.copy()
-    no_edge_mask = latest_display["selected_model"].astype(str) == "no_valid_edge"
-    latest_display.loc[no_edge_mask, ["expected_return", "model_implied_forecast_price"]] = pd.NA
+    non_actionable_mask = (latest_display["selected_model"].astype(str) == "no_valid_edge") | (deployability_decision != "deployable")
+    latest_display.loc[non_actionable_mask, ["expected_return", "model_implied_forecast_price"]] = pd.NA
     st.dataframe(
         latest_display[
             [
@@ -994,7 +1085,7 @@ with forecast_tab:
         width="stretch",
         hide_index=True,
     )
-    st.caption("180d is diagnostic only and never drives model selection.")
+    st.caption("180d is diagnostic only and never drives model selection. Expected return and model-implied forecast price are shown only when deployability is validated.")
 
 with calibration_tab:
     st.subheader("Out-of-Sample Calibration")

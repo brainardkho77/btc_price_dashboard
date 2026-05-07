@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `btc_research_20260507T123724Z`
+- Run ID: `btc_research_20260507T141045Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -26,7 +26,7 @@
 - `manual_csv` / `basis`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 
 ## Derivatives Impact
-- Best with derivatives: `logistic_linear` at `49.0%`. Best without derivatives: `hgb` at `51.0%`. Improved directional accuracy: `False`.
+- Best with derivatives: `logistic_linear` at `50.0%`. Best without derivatives: `hgb` at `51.0%`. Improved directional accuracy: `False`.
 
 ## Feature Group Watchlist
 - `dollar_rates_only` / `logistic_linear`: samples `100`, accuracy `55.0%`, Sharpe `0.91`, drawdown `-42.9%`, Brier `0.245`, calibration error `0.108`, reliability `Low confidence`.

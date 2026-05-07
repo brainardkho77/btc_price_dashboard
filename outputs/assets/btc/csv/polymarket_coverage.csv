@@ -1,2 +1,2 @@
 run_id,asset_id,source,status,rows,events,markets,first_date,last_date,missing_pct,used_in_model,failure_reason
-btc_research_20260507T123724Z,btc,Polymarket Gamma/CLOB APIs,worked,530,19,290,2024-02-29,2026-05-07,0.8267792521109771,False,
+btc_research_20260507T141045Z,btc,Polymarket Gamma/CLOB APIs,worked,530,19,290,2024-02-29,2026-05-07,0.8267792521109771,False,

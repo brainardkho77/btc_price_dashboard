@@ -2896,6 +2896,15 @@ SOL_SELECTION_AUDIT_PAIRS = [
     ("sol_price_plus_ecosystem", "logistic_linear"),
 ]
 
+SOL_DEPLOYABILITY_AUDIT_PAIRS = [
+    ("all_features", "logistic_linear"),
+    ("sol_rates_risk_price", "logistic_linear"),
+    ("price_plus_macro", "logistic_linear"),
+    ("sol_dollar_rates_only", "random_forest"),
+    ("price_plus_risk_assets", "logistic_linear"),
+    ("sol_price_plus_ecosystem", "logistic_linear"),
+]
+
 BTC_NO_EDGE_DRILLDOWN_PAIRS = [
     ("price_plus_stablecoins", "logistic_linear"),
     ("btc_dollar_rates_cycle", "logistic_linear"),
@@ -3531,6 +3540,227 @@ def asset_deployability_report(
             }
         ]
     )
+
+
+def _gate_value(
+    gates_passed: List[str],
+    gates_failed: List[str],
+    gates_unavailable: List[str],
+    name: str,
+    value,
+    *,
+    required: bool = True,
+) -> bool:
+    if value is None or pd.isna(value):
+        if required:
+            gates_unavailable.append(name)
+        return False
+    if bool(value):
+        gates_passed.append(name)
+        return True
+    gates_failed.append(name)
+    return False
+
+
+def _stability_value(stability: pd.DataFrame, feature_set: str, model_name: str, slice_name: str, column: str):
+    if stability.empty:
+        return np.nan
+    rows = stability[
+        (stability["candidate_feature_set"].astype(str) == feature_set)
+        & (stability["model_name"].astype(str) == model_name)
+        & (stability["period_slice"].astype(str) == slice_name)
+    ]
+    if rows.empty or column not in rows:
+        return np.nan
+    return rows.iloc[0].get(column, np.nan)
+
+
+def _candidate_policy(signal_policy: pd.DataFrame, feature_set: str, model_name: str) -> pd.Series:
+    if signal_policy.empty:
+        return pd.Series(dtype=object)
+    rows = signal_policy[
+        (signal_policy["candidate_feature_set"].astype(str) == feature_set)
+        & (signal_policy["model_name"].astype(str) == model_name)
+        & (signal_policy["horizon"] == 30)
+        & (signal_policy["window_type"] == "official_monthly")
+    ]
+    return rows.iloc[0] if not rows.empty else pd.Series(dtype=object)
+
+
+def sol_deployability_audit(
+    run_id: str,
+    generated_at: str,
+    latest: pd.DataFrame,
+    latest_interpretation: pd.DataFrame,
+    asset_feature_sets: pd.DataFrame,
+    signal_policy: pd.DataFrame,
+    stability: pd.DataFrame,
+) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "sol":
+        return empty_diagnostic_frame("sol_deployability_audit.csv")
+    if latest.empty:
+        return empty_diagnostic_frame("sol_deployability_audit.csv")
+
+    primary = latest[latest["is_primary_objective"] == True].head(1)
+    latest_row = primary.iloc[0] if not primary.empty else latest.iloc[0]
+    interp_row = latest_interpretation.iloc[0] if not latest_interpretation.empty else pd.Series(dtype=object)
+    selected_model = str(latest_row.get("selected_model", ""))
+    selected_feature_set = str(interp_row.get("selected_feature_set", "all_features") or "all_features")
+    latest_probability = latest_row.get("predicted_probability_up", np.nan)
+    latest_expected = latest_row.get("expected_return", np.nan)
+    latest_signal = str(latest_row.get("signal", "neutral"))
+    strategy_action = str(interp_row.get("strategy_action", "cash"))
+    risk_label = str(interp_row.get("risk_label", "Neutral / no edge"))
+
+    rows = []
+    for feature_set, model_name in SOL_DEPLOYABILITY_AUDIT_PAIRS:
+        candidate = _candidate_lookup(asset_feature_sets, feature_set, model_name)
+        if candidate.empty:
+            if feature_set == "all_features" and model_name == "logistic_linear":
+                rows.append(
+                    {
+                        "asset": "sol",
+                        "feature_set": feature_set,
+                        "model_name": model_name,
+                        "is_selected_model": selected_model == model_name and selected_feature_set == feature_set,
+                        "official_horizon": 30,
+                        "official_accuracy": np.nan,
+                        "brier_score": np.nan,
+                        "calibration_error": np.nan,
+                        "after_cost_return": np.nan,
+                        "max_drawdown": np.nan,
+                        "bootstrap_ci_low": np.nan,
+                        "permutation_p_value": np.nan,
+                        "official_sample_count": 0,
+                        "active_signal_count": 0,
+                        "active_coverage": np.nan,
+                        "active_hit_rate": np.nan,
+                        "missed_up_month_rate": np.nan,
+                        "btc_up_accuracy": np.nan,
+                        "btc_down_accuracy": np.nan,
+                        "stability_2023_2024": np.nan,
+                        "stability_2024_present": np.nan,
+                        "latest_probability_up": latest_probability,
+                        "latest_expected_return": latest_expected,
+                        "latest_signal": latest_signal,
+                        "strategy_action": strategy_action,
+                        "risk_label": risk_label,
+                        "deployability_decision": "not_deployable",
+                        "passed_gates": "",
+                        "failed_gates": "official_30d_candidate_present",
+                        "skipped_gates": "",
+                        "unavailable_gates": "",
+                        "rejection_or_caution_reason": "Selected SOL candidate was not present in existing validation outputs.",
+                        "generated_at": generated_at,
+                    }
+                )
+            continue
+
+        row = candidate.iloc[0]
+        policy = _candidate_policy(signal_policy, feature_set, model_name)
+        gates_passed: List[str] = []
+        gates_failed: List[str] = []
+        gates_skipped: List[str] = []
+        gates_unavailable: List[str] = []
+
+        n_samples = int(row.get("n_samples", 0) or 0)
+        active_count = int(policy.get("active_signal_count", 0) or 0) if not policy.empty else 0
+        is_selected = bool(selected_model == model_name and selected_feature_set == feature_set)
+        if feature_set == "all_features" and model_name == selected_model:
+            is_selected = True
+
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "official_30d_candidate_present", True)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "official_sample_threshold", n_samples >= min_samples_for(30, "official_monthly"))
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "beats_buy_hold", row.get("beats_buy_hold", np.nan))
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "beats_momentum_30d", row.get("beats_momentum_30d", np.nan))
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "beats_momentum_90d", row.get("beats_momentum_90d", np.nan))
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "beats_random_baseline", row.get("beats_random_baseline", np.nan))
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "after_cost_positive", row.get("net_return", np.nan) > 0 if pd.notna(row.get("net_return", np.nan)) else np.nan)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "bootstrap_ci_low_above_50", row.get("bootstrap_ci_low", np.nan) > 0.50 if pd.notna(row.get("bootstrap_ci_low", np.nan)) else np.nan)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "permutation_p_value_lte_0_10", row.get("permutation_p_value", np.nan) <= 0.10 if pd.notna(row.get("permutation_p_value", np.nan)) else np.nan)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "brier_acceptable", row.get("brier_score", np.nan) <= 0.30 if pd.notna(row.get("brier_score", np.nan)) else np.nan)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "calibration_acceptable", row.get("calibration_error", np.nan) <= 0.15 if pd.notna(row.get("calibration_error", np.nan)) else np.nan)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "drawdown_acceptable", row.get("max_drawdown", np.nan) >= -0.50 if pd.notna(row.get("max_drawdown", np.nan)) else np.nan)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "not_materially_worse", not _bool_value(row.get("material_worsening", np.nan)) if pd.notna(row.get("material_worsening", np.nan)) else np.nan)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "signal_policy_available", not policy.empty)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "signal_policy_train_only", str(policy.get("policy_source", "")) == "train_calibration_only" if not policy.empty else np.nan)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "signal_policy_valid", policy.get("valid_signal_policy", np.nan) if not policy.empty else np.nan)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "active_signal_floor", active_count >= active_signal_floor(n_samples) if n_samples else False)
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "high_confidence_active_signal_floor", active_count >= high_confidence_signal_floor(n_samples) if n_samples else False)
+        latest_action_ok = bool(is_selected and strategy_action == "long" and str(latest_signal) != "neutral")
+        _gate_value(gates_passed, gates_failed, gates_unavailable, "latest_deployable_action", latest_action_ok)
+
+        stability_values = {
+            "btc_up_accuracy": _stability_value(stability, feature_set, model_name, "BTC-up", "directional_accuracy"),
+            "btc_down_accuracy": _stability_value(stability, feature_set, model_name, "BTC-down", "directional_accuracy"),
+            "stability_2023_2024": _stability_value(stability, feature_set, model_name, "2023-2024", "directional_accuracy"),
+            "stability_2024_present": _stability_value(stability, feature_set, model_name, "2024-present", "directional_accuracy"),
+        }
+        for slice_name, gate_name in [
+            ("BTC-up", "btc_up_stability"),
+            ("BTC-down", "btc_down_stability"),
+            ("2023-2024", "stability_2023_2024_pass"),
+            ("2024-present", "stability_2024_present_pass"),
+        ]:
+            passed = _stability_value(stability, feature_set, model_name, slice_name, "passes_stability_check")
+            _gate_value(gates_passed, gates_failed, gates_unavailable, gate_name, passed)
+        stability_gate_names = {"btc_up_stability", "btc_down_stability", "stability_2023_2024_pass", "stability_2024_present_pass"}
+        _gate_value(
+            gates_passed,
+            gates_failed,
+            gates_unavailable,
+            "edge_not_concentrated_in_one_regime",
+            all(name in gates_passed for name in stability_gate_names) if not any(name in gates_unavailable for name in stability_gate_names) else np.nan,
+        )
+
+        deployable = bool(is_selected and not gates_failed and not gates_unavailable)
+        if deployable:
+            decision = "deployable"
+            reason = "Selected SOL model passes all deployability gates and current train-only signal policy supports action."
+        elif not is_selected and row.get("reliability_label", "") == "Low confidence":
+            decision = "not_deployable"
+            reason = "Candidate is not selected and fails core reliability or official gate checks."
+        else:
+            decision = "diagnostic_only"
+            main_blocks = gates_failed[:3] + gates_unavailable[:3]
+            reason = "Blocked by " + ", ".join(main_blocks) if main_blocks else "Candidate remains context-only because it is not the selected deployable model."
+
+        rows.append(
+            {
+                "asset": "sol",
+                "feature_set": feature_set,
+                "model_name": model_name,
+                "is_selected_model": is_selected,
+                "official_horizon": 30,
+                "official_accuracy": row.get("directional_accuracy", np.nan),
+                "brier_score": row.get("brier_score", np.nan),
+                "calibration_error": row.get("calibration_error", np.nan),
+                "after_cost_return": row.get("net_return", np.nan),
+                "max_drawdown": row.get("max_drawdown", np.nan),
+                "bootstrap_ci_low": row.get("bootstrap_ci_low", np.nan),
+                "permutation_p_value": row.get("permutation_p_value", np.nan),
+                "official_sample_count": n_samples,
+                "active_signal_count": active_count,
+                "active_coverage": policy.get("active_coverage", np.nan) if not policy.empty else np.nan,
+                "active_hit_rate": policy.get("active_hit_rate", np.nan) if not policy.empty else np.nan,
+                "missed_up_month_rate": policy.get("missed_up_month_rate", np.nan) if not policy.empty else np.nan,
+                **stability_values,
+                "latest_probability_up": latest_probability,
+                "latest_expected_return": latest_expected,
+                "latest_signal": latest_signal,
+                "strategy_action": strategy_action if is_selected else "context_only",
+                "risk_label": risk_label if is_selected else "Diagnostic candidate",
+                "deployability_decision": decision,
+                "passed_gates": "; ".join(gates_passed),
+                "failed_gates": "; ".join(gates_failed),
+                "skipped_gates": "; ".join(gates_skipped),
+                "unavailable_gates": "; ".join(gates_unavailable),
+                "rejection_or_caution_reason": reason,
+                "generated_at": generated_at,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def sol_stability_report(
@@ -4251,6 +4481,18 @@ def write_diagnostics(
         base_outputs["data_availability.csv"],
         macro_candidate_frame,
     )
+    sol_stability_frame = sol_stability_report(run_id, raw, feature_result, config, quick=quick)
+    sol_deployability_frame = sol_deployability_audit(
+        run_id,
+        generated_at,
+        latest,
+        latest_interpretation,
+        asset_policy["asset_feature_set_leaderboard.csv"],
+        asset_policy["signal_policy_report.csv"],
+        sol_stability_frame,
+    )
+    if _asset_id_from_run(run_id) == "sol":
+        write_schema_csv("sol_deployability_audit.csv", sol_deployability_frame, output_dir)
     diagnostics = {
         "model_rejection_reasons.csv": model_rejection_reasons(base_outputs["backtest_summary.csv"], selected_model),
         "feature_signal_diagnostics.csv": feature_signal_frame,
@@ -4273,6 +4515,7 @@ def write_diagnostics(
         "macro_candidate_impact_report.csv": macro_candidate_frame,
         "fred_vs_fallback_summary.csv": fred_summary_frame,
         "asset_deployability_report.csv": deployability_frame,
+        "sol_stability_report.csv": sol_stability_frame,
         "sol_selection_audit.csv": sol_selection_audit(run_id, asset_policy["asset_feature_set_leaderboard.csv"]),
         "sol_signal_policy_deployment.csv": sol_signal_policy_deployment_check(
             run_id,
@@ -4289,4 +4532,5 @@ def write_diagnostics(
     write_edge_validation_report(output_dir)
     returned = dict(diagnostics)
     returned["latest_signal_interpretation.csv"] = latest_interpretation
+    returned["sol_deployability_audit.csv"] = sol_deployability_frame
     return returned

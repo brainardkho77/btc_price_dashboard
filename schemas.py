@@ -726,6 +726,41 @@ DIAGNOSTIC_OUTPUT_SCHEMAS: Dict[str, List[str]] = {
         "caution_reason",
         "why_no_signal",
     ],
+    "sol_deployability_audit.csv": [
+        "asset",
+        "feature_set",
+        "model_name",
+        "is_selected_model",
+        "official_horizon",
+        "official_accuracy",
+        "brier_score",
+        "calibration_error",
+        "after_cost_return",
+        "max_drawdown",
+        "bootstrap_ci_low",
+        "permutation_p_value",
+        "official_sample_count",
+        "active_signal_count",
+        "active_coverage",
+        "active_hit_rate",
+        "missed_up_month_rate",
+        "btc_up_accuracy",
+        "btc_down_accuracy",
+        "stability_2023_2024",
+        "stability_2024_present",
+        "latest_probability_up",
+        "latest_expected_return",
+        "latest_signal",
+        "strategy_action",
+        "risk_label",
+        "deployability_decision",
+        "passed_gates",
+        "failed_gates",
+        "skipped_gates",
+        "unavailable_gates",
+        "rejection_or_caution_reason",
+        "generated_at",
+    ],
 }
 
 REQUIRED_CSV_OUTPUTS = list(OUTPUT_SCHEMAS.keys())
@@ -796,4 +831,8 @@ def validate_output_dir(output_dir: Path, required: Iterable[str] = REQUIRED_OUT
 def validate_diagnostic_output_dir(output_dir: Path) -> None:
     diagnostic_dir = output_dir / "csv"
     for filename in DIAGNOSTIC_OUTPUT_SCHEMAS:
+        if filename == "sol_deployability_audit.csv":
+            continue
         validate_output_file(diagnostic_dir, filename)
+    if output_dir.name == "sol":
+        validate_output_file(output_dir, "sol_deployability_audit.csv")

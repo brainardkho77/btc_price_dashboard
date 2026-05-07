@@ -1,22 +1,22 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `spx_research_20260507T144238Z`
+- Full refresh run ID: `spx_research_20260507T190435Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
 - no_valid_edge triggered correctly: `True`
 
 ## Why Quick Mode Looked Better
-Quick mode used `2018-01-02` to `2026-05-06` with `75` 30d official samples and selected `random_forest`. Full refresh used `2015-01-02` to `2026-05-07` with `99` 30d official samples and selected `no_valid_edge`. The quick edge disappeared because the broader 2015+ sample added regimes where the ML models did not beat the 90d momentum baseline or the full baseline set after costs.
+Quick mode used `2018-01-02` to `2026-05-07` with `75` 30d official samples and selected `random_forest`. Full refresh used `2015-01-02` to `2026-05-07` with `99` 30d official samples and selected `no_valid_edge`. The quick edge disappeared because the broader 2015+ sample added regimes where the ML models did not beat the 90d momentum baseline or the full baseline set after costs.
 
 ## 30d Official Model Comparison
-- Best ML model: `logistic_linear` with directional accuracy `64.6%`
+- Best ML model: `logistic_linear` with directional accuracy `65.7%`
 - Best baseline: `buy_hold_direction` with directional accuracy `67.7%`
 - Baselines that beat the best ML model: `buy_hold_direction`
 
 Validation gates failed by ML model:
-- `logistic_linear`: did_not_beat_buy_hold; failed_transaction_cost_check; low_reliability
+- `logistic_linear`: did_not_beat_buy_hold; low_reliability
 - `hgb`: did_not_beat_buy_hold; failed_transaction_cost_check; low_reliability
 - `random_forest`: did_not_beat_buy_hold; failed_transaction_cost_check; low_reliability
 

@@ -33,6 +33,8 @@ from research_pipeline import (
 from diagnostic_outputs import (
     _btc_trend_masks,
     _material_worsening,
+    _risk_off_return_frame,
+    _spx_risk_off_row,
     active_signal_floor,
     asset_deployability_report,
     asset_feature_set_and_policy_diagnostics,
@@ -52,6 +54,8 @@ from diagnostic_outputs import (
     sol_deployability_audit,
     sol_signal_policy_deployment_check,
     sol_stability_candidate_pairs,
+    SPX_RISK_OFF_AUDIT_PAIRS,
+    SPX_RISK_OFF_RETURN_METHOD,
 )
 from schemas import DIAGNOSTIC_OUTPUT_SCHEMAS, OUTPUT_SCHEMAS, empty_diagnostic_frame, empty_output_frame, validate_frame
 
@@ -413,6 +417,7 @@ def test_diagnostic_schemas_include_required_outputs():
         "btc_no_edge_drilldown.csv",
         "asset_deployability_report.csv",
         "sol_deployability_audit.csv",
+        "spx_risk_off_audit.csv",
     ]:
         assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
     assert "latest_signal_interpretation.csv" in OUTPUT_SCHEMAS
@@ -435,6 +440,8 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "rejection_category" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_no_edge_drilldown.csv"]
     assert "equity_chart_role" in DIAGNOSTIC_OUTPUT_SCHEMAS["asset_deployability_report.csv"]
     assert "unavailable_gates" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_deployability_audit.csv"]
+    assert "threshold_selected_on" in DIAGNOSTIC_OUTPUT_SCHEMAS["spx_risk_off_audit.csv"]
+    assert "return_calculation_method" in DIAGNOSTIC_OUTPUT_SCHEMAS["spx_risk_off_audit.csv"]
 
 
 def test_btc_up_down_slice_creation_uses_known_btc_history():
@@ -859,6 +866,151 @@ def test_sol_deployability_requires_latest_long_action_and_high_active_floor():
     assert row["deployability_decision"] == "diagnostic_only"
     assert "high_confidence_active_signal_floor" in row["failed_gates"]
     assert "latest_deployable_action" in row["failed_gates"]
+
+
+def _spx_risk_off_test_predictions():
+    dates = pd.date_range("2021-01-31", periods=48, freq="ME")
+    actual_return = np.array(
+        [
+            -0.05,
+            0.03,
+            -0.02,
+            0.04,
+            -0.08,
+            0.02,
+            -0.01,
+            0.03,
+            -0.04,
+            0.02,
+            -0.03,
+            0.01,
+        ]
+        * 4
+    )
+    probability_up = np.array([0.30, 0.60, 0.40, 0.70, 0.34, 0.55, 0.45, 0.80, 0.38, 0.62, 0.33, 0.50] * 4)
+    expected_return = np.array([-0.06, 0.03, -0.03, 0.04, -0.08, 0.02, -0.01, 0.03, -0.05, 0.02, -0.04, 0.01] * 4)
+    return pd.DataFrame(
+        {
+            "probability_up": probability_up,
+            "expected_log_return": np.log1p(expected_return),
+            "actual_return": actual_return,
+            "actual_log_return": np.log1p(actual_return),
+            "actual_up": (actual_return > 0).astype(int),
+            "predicted_up": (probability_up >= 0.5).astype(int),
+            "position": (probability_up >= 0.5).astype(float),
+            "threshold": 0.5,
+        },
+        index=dates,
+    )
+
+
+def test_spx_risk_off_schema_threshold_metadata_and_cash_only_positions():
+    preds = _spx_risk_off_test_predictions()
+    config = ResearchConfig(quick_bootstrap_iterations=20, quick_permutation_iterations=20)
+    prob_row = _spx_risk_off_row(
+        "2026-01-01T00:00:00+00:00",
+        "spx_macro_risk",
+        "logistic_linear",
+        preds,
+        "probability_up",
+        0.40,
+        config,
+        quick=True,
+        expected_dates=pd.DatetimeIndex(preds.index),
+    )
+    expected_row = _spx_risk_off_row(
+        "2026-01-01T00:00:00+00:00",
+        "spx_macro_risk",
+        "logistic_linear",
+        preds,
+        "expected_return",
+        -0.02,
+        config,
+        quick=True,
+        expected_dates=pd.DatetimeIndex(preds.index),
+    )
+    out = pd.DataFrame([prob_row, expected_row])
+    validate_frame("spx_risk_off_audit.csv", out)
+    assert prob_row["threshold_type"] == "probability_up"
+    assert prob_row["risk_off_threshold"] == 0.40
+    assert pd.isna(prob_row["expected_return_threshold"])
+    assert expected_row["threshold_type"] == "expected_return"
+    assert expected_row["expected_return_threshold"] == -0.02
+    assert pd.isna(expected_row["risk_off_threshold"])
+    assert prob_row["threshold_selected_on"] == "pre_registered_policy_grid"
+    assert prob_row["selection_basis"] == "policy_fixed_pre_registered"
+    assert bool(prob_row["leakage_check_passed"]) is True
+    assert prob_row["return_calculation_method"] == SPX_RISK_OFF_RETURN_METHOD
+    assert "official_walk_forward_dates_match" in prob_row["passed_gates"]
+    frame = _risk_off_return_frame(preds, "probability_up", 0.40, config.transaction_cost_bps)
+    assert frame["position"].min() >= 0
+    assert frame["position"].max() <= 1
+
+
+def test_spx_downside_month_is_official_forward_return_below_zero_and_detection_is_permuted():
+    preds = _spx_risk_off_test_predictions()
+    config = ResearchConfig(quick_bootstrap_iterations=20, quick_permutation_iterations=20)
+    row = _spx_risk_off_row(
+        "2026-01-01T00:00:00+00:00",
+        "spx_macro_risk",
+        "logistic_linear",
+        preds,
+        "probability_up",
+        0.40,
+        config,
+        quick=True,
+        expected_dates=pd.DatetimeIndex(preds.index),
+    )
+    downside = preds["actual_return"] < 0
+    risk_off = preds["probability_up"] <= 0.40
+    expected_detection = float((risk_off & downside).sum() / downside.sum())
+    assert row["downside_month_detection_rate"] == expected_detection
+    assert pd.notna(row["permutation_p_value"])
+    assert "downside_detection_permutation_pass" in row["passed_gates"] or "downside_detection_permutation_pass" in row["failed_gates"]
+
+
+def test_spx_risk_off_threshold_scope_excludes_hgb_and_combined_thresholds():
+    pairs = set(SPX_RISK_OFF_AUDIT_PAIRS)
+    assert all(model_name != "hgb" for _, model_name in pairs)
+    threshold_types = {"probability_up", "expected_return"}
+    assert "combined" not in threshold_types
+
+
+def test_spx_final_test_ranked_rows_are_diagnostic_only_and_not_deployable():
+    preds = _spx_risk_off_test_predictions()
+    config = ResearchConfig(quick_bootstrap_iterations=20, quick_permutation_iterations=20)
+    row = _spx_risk_off_row(
+        "2026-01-01T00:00:00+00:00",
+        "spx_macro_risk",
+        "logistic_linear",
+        preds,
+        "probability_up",
+        0.40,
+        config,
+        quick=True,
+        selection_basis="final_test_ranked",
+        expected_dates=pd.DatetimeIndex(preds.index),
+    )
+    assert row["risk_off_decision"] == "diagnostic_only"
+    assert "selection_not_final_test_ranked" in row["failed_gates"]
+
+
+def test_spx_risk_off_regime_concentration_blocks_deployability_when_concentrated():
+    preds = _spx_risk_off_test_predictions().loc["2024-01-01":].copy()
+    config = ResearchConfig(quick_bootstrap_iterations=20, quick_permutation_iterations=20)
+    row = _spx_risk_off_row(
+        "2026-01-01T00:00:00+00:00",
+        "spx_macro_risk",
+        "logistic_linear",
+        preds,
+        "probability_up",
+        0.40,
+        config,
+        quick=True,
+        expected_dates=pd.DatetimeIndex(preds.index),
+    )
+    assert bool(row["regime_check_passed"]) is False
+    assert row["risk_off_decision"] != "deployable"
 
 
 def test_btc_no_edge_drilldown_classifies_target_candidates():

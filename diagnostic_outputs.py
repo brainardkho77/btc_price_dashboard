@@ -18,6 +18,8 @@ BASELINE_DIR = Path("/tmp/btc_refresh_baseline")
 LONG_POLICY_THRESHOLDS = (0.50, 0.55, 0.60, 0.65)
 EXPECTED_RETURN_FILTERS = (0.0, 0.02, 0.05)
 RISK_OFF_PROBABILITY_THRESHOLDS = (0.35, 0.40, 0.45)
+SPX_RISK_OFF_EXPECTED_RETURN_THRESHOLDS = (0.0, -0.02, -0.05)
+SPX_RISK_OFF_RETURN_METHOD = "official_30d_non_overlapping_walk_forward_returns_after_costs"
 VALID_ACTIVE_MIN_COUNT = 12
 VALID_ACTIVE_MIN_RATIO = 0.20
 HIGH_CONFIDENCE_ACTIVE_MIN_COUNT = 18
@@ -2911,6 +2913,16 @@ BTC_NO_EDGE_DRILLDOWN_PAIRS = [
     ("price_plus_dollar_rates", "logistic_linear"),
 ]
 
+SPX_RISK_OFF_AUDIT_PAIRS = [
+    ("all_features", "logistic_linear"),
+    ("all_features", "random_forest"),
+    ("price_momentum_only", "logistic_linear"),
+    ("spx_macro_risk", "logistic_linear"),
+    ("spx_rates_liquidity", "logistic_linear"),
+    ("spx_cross_asset_risk", "logistic_linear"),
+    ("spx_price_macro_risk", "logistic_linear"),
+]
+
 
 def _bool_value(value) -> bool:
     if isinstance(value, (bool, np.bool_)):
@@ -3763,6 +3775,384 @@ def sol_deployability_audit(
     return pd.DataFrame(rows)
 
 
+def _annualized_ratio(returns: pd.Series, *, sortino: bool = False, periods_per_year: float = 12.0) -> float:
+    if returns.empty:
+        return np.nan
+    base = returns[returns < 0] if sortino else returns
+    std = float(base.std(ddof=1))
+    return float((returns.mean() / std) * math.sqrt(periods_per_year)) if std > 0 else np.nan
+
+
+def _risk_off_return_frame(preds: pd.DataFrame, threshold_type: str, threshold_value: float, transaction_cost_bps: float) -> pd.DataFrame:
+    frame = preds.copy().sort_index()
+    expected_return = np.exp(frame["expected_log_return"].astype(float)) - 1
+    if threshold_type == "probability_up":
+        frame["risk_off_flag"] = frame["probability_up"].astype(float) <= float(threshold_value)
+    elif threshold_type == "expected_return":
+        frame["risk_off_flag"] = expected_return <= float(threshold_value)
+    else:
+        raise ValueError(f"Unsupported SPX risk-off threshold_type: {threshold_type}")
+    frame["position"] = (~frame["risk_off_flag"].astype(bool)).astype(float)
+    cost_rate = float(transaction_cost_bps) / 10000.0
+    # The SPX risk-off audit uses the same official non-overlapping 30d
+    # walk-forward dates as directional evaluation. Returns are compounded
+    # once per official rebalance row; overlapping 30d forward returns are
+    # not treated as independent monthly strategy returns here.
+    frame["turnover"] = frame["position"].diff().abs().fillna((frame["position"] - 1.0).abs())
+    frame["buy_hold_return"] = frame["actual_return"].astype(float)
+    frame["risk_off_return_after_costs"] = frame["position"] * frame["actual_return"].astype(float) - frame["turnover"] * cost_rate
+    return frame
+
+
+def _spx_risk_off_metrics(frame: pd.DataFrame, transaction_cost_bps: float) -> dict:
+    if frame.empty:
+        return {}
+    downside = frame["actual_return"].astype(float) < 0
+    up_month = frame["actual_return"].astype(float) > 0
+    risk_off = frame["risk_off_flag"].astype(bool)
+    buy_hold_returns = frame["buy_hold_return"].astype(float)
+    risk_returns = frame["risk_off_return_after_costs"].astype(float)
+    buy_hold_mdd = _max_drawdown_from_returns(buy_hold_returns)
+    risk_mdd = _max_drawdown_from_returns(risk_returns)
+    risk_off_count = int(risk_off.sum())
+    return {
+        "official_sample_count": int(len(frame)),
+        "risk_off_count": risk_off_count,
+        "risk_off_coverage": float(risk_off_count / len(frame)) if len(frame) else 0.0,
+        "downside_month_detection_rate": float((risk_off & downside).sum() / downside.sum()) if int(downside.sum()) else np.nan,
+        "false_risk_off_rate": float((risk_off & ~downside).sum() / risk_off_count) if risk_off_count else np.nan,
+        "avoided_loss": float((-frame.loc[risk_off & downside, "actual_return"].astype(float)).sum()) if risk_off_count else 0.0,
+        "cash_drag": float(frame.loc[risk_off & up_month, "actual_return"].astype(float).sum()) if risk_off_count else 0.0,
+        "up_month_participation": float((~risk_off & up_month).sum() / up_month.sum()) if int(up_month.sum()) else np.nan,
+        "buy_hold_return": float((1 + buy_hold_returns).prod() - 1),
+        "risk_off_return_after_costs": float((1 + risk_returns).prod() - 1),
+        "return_delta_vs_buy_hold": float((1 + risk_returns).prod() - (1 + buy_hold_returns).prod()),
+        "buy_hold_max_drawdown": buy_hold_mdd,
+        "risk_off_max_drawdown": risk_mdd,
+        "drawdown_reduction": float(risk_mdd - buy_hold_mdd) if pd.notna(risk_mdd) and pd.notna(buy_hold_mdd) else np.nan,
+        "buy_hold_sharpe": _annualized_ratio(buy_hold_returns),
+        "risk_off_sharpe": _annualized_ratio(risk_returns),
+        "buy_hold_sortino": _annualized_ratio(buy_hold_returns, sortino=True),
+        "risk_off_sortino": _annualized_ratio(risk_returns, sortino=True),
+        "worst_month_improvement": float(risk_returns.min() - buy_hold_returns.min()) if len(frame) else np.nan,
+        "turnover": float(frame["turnover"].astype(float).mean()) if len(frame) else np.nan,
+        "transaction_cost_bps": float(transaction_cost_bps),
+    }
+
+
+def _block_bootstrap_drawdown_reduction(
+    frame: pd.DataFrame,
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> float:
+    if len(frame) < 8:
+        return np.nan
+    iterations = config.quick_bootstrap_iterations if quick else min(config.bootstrap_iterations, 250)
+    rng = np.random.default_rng(config.random_seed + 9300 + len(frame))
+    buy = frame["buy_hold_return"].astype(float).to_numpy()
+    risk = frame["risk_off_return_after_costs"].astype(float).to_numpy()
+    n = len(frame)
+    block_len = max(2, min(6, int(round(math.sqrt(n)))))
+    values = []
+    for _ in range(iterations):
+        idx: List[int] = []
+        while len(idx) < n:
+            start = int(rng.integers(0, n))
+            idx.extend([(start + offset) % n for offset in range(block_len)])
+        idx = idx[:n]
+        buy_sample = pd.Series(buy[idx])
+        risk_sample = pd.Series(risk[idx])
+        values.append(_max_drawdown_from_returns(risk_sample) - _max_drawdown_from_returns(buy_sample))
+    arr = np.array(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    return float(np.percentile(arr, 5)) if len(arr) else np.nan
+
+
+def _risk_off_permutation_p_value(frame: pd.DataFrame, config: ResearchConfig, *, quick: bool) -> float:
+    if frame.empty:
+        return np.nan
+    risk = frame["risk_off_flag"].astype(bool).to_numpy()
+    downside = (frame["actual_return"].astype(float) < 0).to_numpy()
+    n = len(risk)
+    k = int(risk.sum())
+    downside_count = int(downside.sum())
+    if k == 0 or downside_count == 0:
+        return np.nan
+    observed = float((risk & downside).sum() / downside_count)
+    iterations = config.quick_permutation_iterations if quick else min(config.permutation_iterations, 250)
+    rng = np.random.default_rng(config.random_seed + 9400 + n + k)
+    hits = 0
+    for _ in range(iterations):
+        randomized = np.zeros(n, dtype=bool)
+        randomized[rng.choice(n, size=k, replace=False)] = True
+        if float((randomized & downside).sum() / downside_count) >= observed:
+            hits += 1
+    return float((hits + 1) / (iterations + 1))
+
+
+def _spx_regime_concentration(frame: pd.DataFrame) -> Tuple[float, bool]:
+    if frame.empty:
+        return np.nan, False
+    wins = frame[frame["risk_off_flag"].astype(bool) & (frame["actual_return"].astype(float) < 0)]
+    if len(wins) < 2:
+        return np.nan, False
+    periods = {
+        "2018-2020": (wins.index >= pd.Timestamp("2018-01-01")) & (wins.index <= pd.Timestamp("2020-12-31")),
+        "2021-2023": (wins.index >= pd.Timestamp("2021-01-01")) & (wins.index <= pd.Timestamp("2023-12-31")),
+        "2024-present": wins.index >= pd.Timestamp("2024-01-01"),
+    }
+    counts = np.array([int(mask.sum()) for mask in periods.values()], dtype=float)
+    total = float(counts.sum())
+    if total <= 0:
+        return np.nan, False
+    score = float(counts.max() / total)
+    active_periods = int((counts > 0).sum())
+    return score, bool(active_periods >= 2 and score <= 0.75)
+
+
+def _empty_spx_risk_off_row(
+    generated_at: str,
+    feature_set: str,
+    model_name: str,
+    threshold_type: str,
+    threshold_value: float,
+    reason: str,
+) -> dict:
+    risk_threshold = float(threshold_value) if threshold_type == "probability_up" else np.nan
+    expected_threshold = float(threshold_value) if threshold_type == "expected_return" else np.nan
+    return {
+        "asset": "spx",
+        "feature_set": feature_set,
+        "model_name": model_name,
+        "official_horizon": 30,
+        "official_sample_count": 0,
+        "threshold_type": threshold_type,
+        "threshold_value": float(threshold_value),
+        "threshold_selected_on": "pre_registered_policy_grid",
+        "selection_window_end": "",
+        "test_window_start": "",
+        "test_window_end": "",
+        "leakage_check_passed": False,
+        "risk_off_threshold": risk_threshold,
+        "expected_return_threshold": expected_threshold,
+        "risk_off_count": 0,
+        "risk_off_coverage": 0.0,
+        "downside_month_detection_rate": np.nan,
+        "false_risk_off_rate": np.nan,
+        "avoided_loss": np.nan,
+        "cash_drag": np.nan,
+        "up_month_participation": np.nan,
+        "buy_hold_return": np.nan,
+        "risk_off_return_after_costs": np.nan,
+        "return_delta_vs_buy_hold": np.nan,
+        "buy_hold_max_drawdown": np.nan,
+        "risk_off_max_drawdown": np.nan,
+        "drawdown_reduction": np.nan,
+        "buy_hold_sharpe": np.nan,
+        "risk_off_sharpe": np.nan,
+        "buy_hold_sortino": np.nan,
+        "risk_off_sortino": np.nan,
+        "worst_month_improvement": np.nan,
+        "turnover": np.nan,
+        "transaction_cost_bps": np.nan,
+        "bootstrap_ci_low": np.nan,
+        "permutation_p_value": np.nan,
+        "regime_concentration_score": np.nan,
+        "regime_check_passed": False,
+        "risk_off_decision": "diagnostic_only",
+        "selection_basis": "policy_fixed_pre_registered",
+        "passed_gates": "",
+        "failed_gates": "",
+        "unavailable_gates": "candidate_predictions_available",
+        "rejection_or_caution_reason": reason,
+        "return_calculation_method": SPX_RISK_OFF_RETURN_METHOD,
+        "generated_at": generated_at,
+    }
+
+
+def _spx_risk_off_row(
+    generated_at: str,
+    feature_set: str,
+    model_name: str,
+    preds: pd.DataFrame,
+    threshold_type: str,
+    threshold_value: float,
+    config: ResearchConfig,
+    *,
+    quick: bool,
+    selection_basis: str = "policy_fixed_pre_registered",
+    expected_dates: Optional[pd.DatetimeIndex] = None,
+) -> dict:
+    frame = _risk_off_return_frame(preds, threshold_type, threshold_value, config.transaction_cost_bps)
+    metrics = _spx_risk_off_metrics(frame, config.transaction_cost_bps)
+    ci_low = _block_bootstrap_drawdown_reduction(frame, config, quick=quick)
+    p_value = _risk_off_permutation_p_value(frame, config, quick=quick)
+    concentration_score, regime_pass = _spx_regime_concentration(frame)
+    test_start = pd.Timestamp(frame.index.min()) if len(frame) else pd.NaT
+    test_end = pd.Timestamp(frame.index.max()) if len(frame) else pd.NaT
+    selection_window_end = test_start - pd.Timedelta(days=1) if pd.notna(test_start) else pd.NaT
+    leakage_ok = bool(
+        selection_basis in {"policy_fixed_pre_registered", "calibration_selected"}
+        and pd.notna(selection_window_end)
+        and pd.notna(test_start)
+        and selection_window_end < test_start
+        and threshold_type in {"probability_up", "expected_return"}
+    )
+
+    gates_passed: List[str] = []
+    gates_failed: List[str] = []
+    gates_unavailable: List[str] = []
+    if expected_dates is None or len(expected_dates) == 0:
+        official_dates_match = np.nan
+    else:
+        official_dates_match = list(pd.DatetimeIndex(frame.index)) == list(pd.DatetimeIndex(expected_dates))
+    n_samples = int(metrics.get("official_sample_count", 0))
+    risk_count = int(metrics.get("risk_off_count", 0))
+    min_risk_count = int(max(8, math.ceil(n_samples * 0.10))) if n_samples else 8
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "selection_not_final_test_ranked", selection_basis != "final_test_ranked")
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "leakage_check_passed", leakage_ok)
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "official_walk_forward_dates_match", official_dates_match)
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "risk_off_sample_floor", risk_count >= min_risk_count if n_samples else np.nan)
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "downside_detection_permutation_pass", p_value <= 0.10 if pd.notna(p_value) else np.nan)
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "drawdown_reduction_5pp", metrics.get("drawdown_reduction", np.nan) >= 0.05 if pd.notna(metrics.get("drawdown_reduction", np.nan)) else np.nan)
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "worst_month_improved", metrics.get("worst_month_improvement", np.nan) > 0 if pd.notna(metrics.get("worst_month_improvement", np.nan)) else np.nan)
+    sharpe_improved = (
+        metrics.get("risk_off_sharpe", np.nan) > metrics.get("buy_hold_sharpe", np.nan)
+        if pd.notna(metrics.get("risk_off_sharpe", np.nan)) and pd.notna(metrics.get("buy_hold_sharpe", np.nan))
+        else np.nan
+    )
+    sortino_improved = (
+        metrics.get("risk_off_sortino", np.nan) > metrics.get("buy_hold_sortino", np.nan)
+        if pd.notna(metrics.get("risk_off_sortino", np.nan)) and pd.notna(metrics.get("buy_hold_sortino", np.nan))
+        else np.nan
+    )
+    _gate_value(
+        gates_passed,
+        gates_failed,
+        gates_unavailable,
+        "sharpe_or_sortino_improved",
+        (bool(sharpe_improved) or bool(sortino_improved)) if pd.notna(sharpe_improved) or pd.notna(sortino_improved) else np.nan,
+    )
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "return_drag_within_10pp", metrics.get("return_delta_vs_buy_hold", np.nan) >= -0.10 if pd.notna(metrics.get("return_delta_vs_buy_hold", np.nan)) else np.nan)
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "transaction_costs_included", config.transaction_cost_bps > 0)
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "block_bootstrap_drawdown_reduction_pass", ci_low > 0 if pd.notna(ci_low) else np.nan)
+    _gate_value(gates_passed, gates_failed, gates_unavailable, "regime_concentration_check_passed", regime_pass if pd.notna(concentration_score) else np.nan)
+
+    if selection_basis == "final_test_ranked":
+        decision = "diagnostic_only"
+        reason = "Final test-period ranking is diagnostic-only and cannot be deployable."
+    elif not gates_failed and not gates_unavailable:
+        decision = "deployable"
+        reason = "Risk-off candidate passes all pre-registered leakage-safe deployability gates."
+    elif any(gate in gates_failed for gate in ["drawdown_reduction_5pp", "return_drag_within_10pp", "risk_off_sample_floor"]):
+        decision = "not_deployable"
+        reason = "Risk-off candidate fails core drawdown, cash-drag, or sample-support gates."
+    else:
+        decision = "diagnostic_only"
+        blockers = gates_failed[:3] + gates_unavailable[:3]
+        reason = "Blocked by " + ", ".join(blockers) if blockers else "Diagnostic-only risk-off evidence."
+
+    risk_threshold = float(threshold_value) if threshold_type == "probability_up" else np.nan
+    expected_threshold = float(threshold_value) if threshold_type == "expected_return" else np.nan
+    return {
+        "asset": "spx",
+        "feature_set": feature_set,
+        "model_name": model_name,
+        "official_horizon": 30,
+        "official_sample_count": n_samples,
+        "threshold_type": threshold_type,
+        "threshold_value": float(threshold_value),
+        "threshold_selected_on": "pre_registered_policy_grid" if selection_basis == "policy_fixed_pre_registered" else "train_calibration",
+        "selection_window_end": selection_window_end.date().isoformat() if pd.notna(selection_window_end) else "",
+        "test_window_start": test_start.date().isoformat() if pd.notna(test_start) else "",
+        "test_window_end": test_end.date().isoformat() if pd.notna(test_end) else "",
+        "leakage_check_passed": leakage_ok,
+        "risk_off_threshold": risk_threshold,
+        "expected_return_threshold": expected_threshold,
+        "bootstrap_ci_low": ci_low,
+        "permutation_p_value": p_value,
+        "regime_concentration_score": concentration_score,
+        "regime_check_passed": regime_pass,
+        "risk_off_decision": decision,
+        "selection_basis": selection_basis,
+        "passed_gates": "; ".join(gates_passed),
+        "failed_gates": "; ".join(gates_failed),
+        "unavailable_gates": "; ".join(gates_unavailable),
+        "rejection_or_caution_reason": reason,
+        "return_calculation_method": SPX_RISK_OFF_RETURN_METHOD,
+        "generated_at": generated_at,
+        **metrics,
+    }
+
+
+def spx_risk_off_audit(
+    run_id: str,
+    generated_at: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+    *,
+    quick: bool,
+) -> pd.DataFrame:
+    from research_pipeline import build_target_frame, build_walk_forward_windows
+
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "spx":
+        return empty_diagnostic_frame("spx_risk_off_audit.csv")
+    candidate_sets = candidate_feature_sets(feature_result.feature_cols, asset_id)
+    official_frame = build_target_frame(raw, feature_result.features, feature_result.feature_cols, 30)
+    official_windows = build_walk_forward_windows(official_frame, 30, "official_monthly", config, quick=quick)
+    expected_dates = pd.DatetimeIndex([window.test_date for window in official_windows])
+    rows = []
+    prediction_cache: Dict[Tuple[str, str], pd.DataFrame] = {}
+    threshold_specs = (
+        [("probability_up", value) for value in (0.45, 0.40, 0.35)]
+        + [("expected_return", value) for value in SPX_RISK_OFF_EXPECTED_RETURN_THRESHOLDS]
+    )
+    for feature_set, model_name in SPX_RISK_OFF_AUDIT_PAIRS:
+        candidate_cols = candidate_sets.get(feature_set, [])
+        preds = pd.DataFrame()
+        reason = ""
+        if len(candidate_cols) < 5:
+            reason = "Candidate feature set unavailable or below minimum feature count."
+        else:
+            cache_key = (feature_set, model_name)
+            if cache_key not in prediction_cache:
+                predictions, _, _, _ = _candidate_predictions_and_summaries(
+                    run_id,
+                    raw,
+                    feature_result,
+                    feature_set,
+                    candidate_cols,
+                    config,
+                    quick=quick,
+                    model_names_override=[model_name],
+                )
+                prediction_cache[cache_key] = predictions.get(model_name, pd.DataFrame())
+            preds = prediction_cache[cache_key]
+            if preds.empty:
+                reason = "Candidate model did not produce official 30d prediction rows."
+        for threshold_type, threshold_value in threshold_specs:
+            if preds.empty:
+                rows.append(_empty_spx_risk_off_row(generated_at, feature_set, model_name, threshold_type, threshold_value, reason))
+            else:
+                rows.append(
+                    _spx_risk_off_row(
+                        generated_at,
+                        feature_set,
+                        model_name,
+                        preds,
+                        threshold_type,
+                        threshold_value,
+                        config,
+                        quick=quick,
+                        expected_dates=expected_dates,
+                    )
+                )
+    return pd.DataFrame(rows)
+
+
 def sol_stability_report(
     run_id: str,
     raw: pd.DataFrame,
@@ -4493,6 +4883,16 @@ def write_diagnostics(
     )
     if _asset_id_from_run(run_id) == "sol":
         write_schema_csv("sol_deployability_audit.csv", sol_deployability_frame, output_dir)
+    spx_risk_off_frame = spx_risk_off_audit(
+        run_id,
+        generated_at,
+        raw,
+        feature_result,
+        config,
+        quick=quick,
+    )
+    if _asset_id_from_run(run_id) == "spx":
+        write_schema_csv("spx_risk_off_audit.csv", spx_risk_off_frame, output_dir)
     diagnostics = {
         "model_rejection_reasons.csv": model_rejection_reasons(base_outputs["backtest_summary.csv"], selected_model),
         "feature_signal_diagnostics.csv": feature_signal_frame,
@@ -4533,4 +4933,5 @@ def write_diagnostics(
     returned = dict(diagnostics)
     returned["latest_signal_interpretation.csv"] = latest_interpretation
     returned["sol_deployability_audit.csv"] = sol_deployability_frame
+    returned["spx_risk_off_audit.csv"] = spx_risk_off_frame
     return returned

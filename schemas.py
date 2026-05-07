@@ -761,6 +761,54 @@ DIAGNOSTIC_OUTPUT_SCHEMAS: Dict[str, List[str]] = {
         "rejection_or_caution_reason",
         "generated_at",
     ],
+    "spx_risk_off_audit.csv": [
+        "asset",
+        "feature_set",
+        "model_name",
+        "official_horizon",
+        "official_sample_count",
+        "threshold_type",
+        "threshold_value",
+        "threshold_selected_on",
+        "selection_window_end",
+        "test_window_start",
+        "test_window_end",
+        "leakage_check_passed",
+        "risk_off_threshold",
+        "expected_return_threshold",
+        "risk_off_count",
+        "risk_off_coverage",
+        "downside_month_detection_rate",
+        "false_risk_off_rate",
+        "avoided_loss",
+        "cash_drag",
+        "up_month_participation",
+        "buy_hold_return",
+        "risk_off_return_after_costs",
+        "return_delta_vs_buy_hold",
+        "buy_hold_max_drawdown",
+        "risk_off_max_drawdown",
+        "drawdown_reduction",
+        "buy_hold_sharpe",
+        "risk_off_sharpe",
+        "buy_hold_sortino",
+        "risk_off_sortino",
+        "worst_month_improvement",
+        "turnover",
+        "transaction_cost_bps",
+        "bootstrap_ci_low",
+        "permutation_p_value",
+        "regime_concentration_score",
+        "regime_check_passed",
+        "risk_off_decision",
+        "selection_basis",
+        "passed_gates",
+        "failed_gates",
+        "unavailable_gates",
+        "rejection_or_caution_reason",
+        "return_calculation_method",
+        "generated_at",
+    ],
 }
 
 REQUIRED_CSV_OUTPUTS = list(OUTPUT_SCHEMAS.keys())
@@ -831,8 +879,10 @@ def validate_output_dir(output_dir: Path, required: Iterable[str] = REQUIRED_OUT
 def validate_diagnostic_output_dir(output_dir: Path) -> None:
     diagnostic_dir = output_dir / "csv"
     for filename in DIAGNOSTIC_OUTPUT_SCHEMAS:
-        if filename == "sol_deployability_audit.csv":
+        if filename in {"sol_deployability_audit.csv", "spx_risk_off_audit.csv"}:
             continue
         validate_output_file(diagnostic_dir, filename)
     if output_dir.name == "sol":
         validate_output_file(output_dir, "sol_deployability_audit.csv")
+    if output_dir.name == "spx":
+        validate_output_file(output_dir, "spx_risk_off_audit.csv")

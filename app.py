@@ -109,6 +109,11 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
             if output_dir.name == "sol"
             else empty_diagnostic_frame("sol_deployability_audit.csv")
         ),
+        "spx_risk_off_audit": (
+            read_optional_root_diagnostic("spx_risk_off_audit.csv")
+            if output_dir.name == "spx"
+            else empty_diagnostic_frame("spx_risk_off_audit.csv")
+        ),
         "sol_selection_audit": read_diagnostic("sol_selection_audit.csv"),
         "sol_signal_policy_deployment": read_diagnostic("sol_signal_policy_deployment.csv"),
         "btc_no_edge_drilldown": read_diagnostic("btc_no_edge_drilldown.csv"),
@@ -296,6 +301,7 @@ asset_deployability = outputs["asset_deployability_report"]
 sol_selection_audit = outputs["sol_selection_audit"]
 sol_signal_policy_deployment = outputs["sol_signal_policy_deployment"]
 sol_deployability_audit = outputs["sol_deployability_audit"]
+spx_risk_off_audit = outputs["spx_risk_off_audit"]
 btc_no_edge_drilldown_frame = outputs["btc_no_edge_drilldown"]
 manifest = outputs["manifest"]
 asset_name = str(manifest.get("asset_name") or asset_config.display_name)
@@ -718,6 +724,78 @@ with signal_tab:
                 hide_index=True,
             )
             st.caption("This policy can adjust interpretation only; it cannot change the selected model.")
+
+    if selected_asset == "spx":
+        st.subheader("SPX Risk-Off Audit")
+        if str(primary_row["selected_model"]) == "no_valid_edge":
+            st.info("SPX has no validated 30d directional edge.")
+        st.caption("Risk-off means moving to cash / avoiding long exposure, not shorting.")
+        st.caption("Risk-Off Audit is diagnostic unless all deployability gates pass.")
+        if spx_risk_off_audit.empty:
+            st.warning("No precomputed SPX risk-off audit is available. Run python research_run.py --refresh --asset spx first.")
+        else:
+            display = spx_risk_off_audit.copy()
+            display["_decision_rank"] = display["risk_off_decision"].map({"deployable": 0, "diagnostic_only": 1, "not_deployable": 2}).fillna(3)
+            best_risk = display.sort_values(
+                ["_decision_rank", "drawdown_reduction", "return_delta_vs_buy_hold", "downside_month_detection_rate"],
+                ascending=[True, False, False, False],
+                na_position="last",
+            ).head(1)
+            if not best_risk.empty:
+                row = best_risk.iloc[0]
+                spx_cols = st.columns(5)
+                spx_cols[0].metric("Risk-off decision", str(row.get("risk_off_decision", "n/a")))
+                spx_cols[1].metric("Candidate", f"{row.get('feature_set', 'n/a')} / {row.get('model_name', 'n/a')}")
+                spx_cols[2].metric("Threshold", f"{row.get('threshold_type', 'n/a')} <= {row.get('threshold_value', 'n/a')}")
+                spx_cols[3].metric("Risk-off coverage", fmt_pct(row.get("risk_off_coverage", pd.NA)))
+                spx_cols[4].metric("Drawdown reduction", fmt_pct(row.get("drawdown_reduction", pd.NA)))
+                st.caption(
+                    f"Selection basis: {row.get('selection_basis', 'n/a')}. "
+                    f"Leakage check: {row.get('leakage_check_passed', 'n/a')}. "
+                    f"Regime check: {row.get('regime_check_passed', 'n/a')}. "
+                    f"{row.get('rejection_or_caution_reason', '')}"
+                )
+            st.dataframe(
+                display.drop(columns=["_decision_rank"], errors="ignore").sort_values(
+                    ["risk_off_decision", "drawdown_reduction", "return_delta_vs_buy_hold"],
+                    ascending=[True, False, False],
+                    na_position="last",
+                )[
+                    [
+                        "feature_set",
+                        "model_name",
+                        "threshold_type",
+                        "threshold_value",
+                        "selection_basis",
+                        "leakage_check_passed",
+                        "risk_off_count",
+                        "risk_off_coverage",
+                        "downside_month_detection_rate",
+                        "false_risk_off_rate",
+                        "drawdown_reduction",
+                        "avoided_loss",
+                        "cash_drag",
+                        "return_delta_vs_buy_hold",
+                        "regime_check_passed",
+                        "risk_off_decision",
+                        "failed_gates",
+                        "unavailable_gates",
+                    ]
+                ].head(50).style.format(
+                    {
+                        "threshold_value": "{:.2f}",
+                        "risk_off_coverage": "{:.1%}",
+                        "downside_month_detection_rate": "{:.1%}",
+                        "false_risk_off_rate": "{:.1%}",
+                        "drawdown_reduction": "{:.1%}",
+                        "avoided_loss": "{:.1%}",
+                        "cash_drag": "{:.1%}",
+                        "return_delta_vs_buy_hold": "{:.1%}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
 
     st.subheader("Full vs Pruned")
     pruning_30 = feature_pruning_report[

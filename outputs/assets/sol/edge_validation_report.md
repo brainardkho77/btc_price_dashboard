@@ -1,7 +1,7 @@
 # SOL Edge Validation + BTC No-Edge Drilldown
 
 ## Run Summary
-- Run ID: `sol_research_20260507T143325Z`
+- Run ID: `sol_research_20260507T185537Z`
 - Asset: `SOL`
 - Selected model: `logistic_linear`
 - Signal: `neutral`

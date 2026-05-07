@@ -2,25 +2,25 @@
 
 ## Run Summary
 - Asset: `S&P 500 / SPX`
-- Run ID: `spx_research_20260507T144238Z`
+- Run ID: `spx_research_20260507T190435Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
-- Current all-feature best ML: `logistic_linear` at `64.6%` accuracy, Brier `0.230`, net return `198.2%`.
+- Current all-feature best ML: `logistic_linear` at `65.7%` accuracy, Brier `0.230`, net return `213.1%`.
 - Best baseline: `buy_hold_direction` at `67.7%` accuracy.
 
 ## Best Pruned Candidate
-- `all_features_official` / `logistic_linear`: samples `99`, accuracy `64.6%`, Brier `0.230`, calibration `0.127`, Sharpe `0.90`, drawdown `-22.9%`, net return `198.2%`.
-- Stability evidence: bootstrap lower bound `55.6%`, bootstrap upper bound `73.7%`, permutation p-value `0.745`.
+- `all_features_official` / `logistic_linear`: samples `99`, accuracy `65.7%`, Brier `0.230`, calibration `0.127`, Sharpe `0.94`, drawdown `-22.9%`, net return `213.1%`.
+- Stability evidence: bootstrap lower bound `57.0%`, bootstrap upper bound `74.7%`, permutation p-value `0.507`.
 - Promotion eligible: `False`. Reason: `current_all_features_reference`
 
 ## Promotion Decision
 - No pruned feature set passed the strict promotion rules. The official conclusion is unchanged.
 
 ## Promising But Rejected Candidates
-- `all_features_official` / `logistic_linear`: label `promising_but_rejected`, accuracy `64.6%`, net return `198.2%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
-- `all_features_official` / `random_forest`: label `promising_but_rejected`, accuracy `63.6%`, net return `182.4%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
-- `all_features_official` / `hgb`: label `promising_but_rejected`, accuracy `60.6%`, net return `154.9%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
+- `all_features_official` / `logistic_linear`: label `promising_but_rejected`, accuracy `65.7%`, net return `213.1%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
+- `all_features_official` / `random_forest`: label `promising_but_rejected`, accuracy `61.6%`, net return `155.2%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
+- `all_features_official` / `hgb`: label `promising_but_rejected`, accuracy `59.6%`, net return `143.3%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
 
 ## Signal Quality
 - Signal quality rows were unavailable.

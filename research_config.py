@@ -29,14 +29,19 @@ MIN_SAMPLE_THRESHOLDS = {
 class AssetConfig:
     asset_id: str
     display_name: str
-    coinbase_product: str
+    coinbase_product: Optional[str]
     yahoo_symbol: str
-    coingecko_id: str
+    coingecko_id: Optional[str]
     coingecko_dataset: str
     coinmetrics_asset: str
     binance_symbol: str
     enable_derivatives: bool
     enable_onchain: bool
+    enable_coinbase: bool = True
+    enable_coingecko: bool = True
+    enable_polymarket: bool = True
+    enable_crypto_sentiment: bool = True
+    enable_stablecoins: bool = True
 
 
 ASSET_CONFIGS: Dict[str, AssetConfig] = {
@@ -63,6 +68,23 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         binance_symbol="SOLUSDT",
         enable_derivatives=False,
         enable_onchain=False,
+    ),
+    "spx": AssetConfig(
+        asset_id="spx",
+        display_name="S&P 500 / SPX",
+        coinbase_product=None,
+        yahoo_symbol="SPY",
+        coingecko_id=None,
+        coingecko_dataset="coingecko_spx_usd",
+        coinmetrics_asset="",
+        binance_symbol="",
+        enable_derivatives=False,
+        enable_onchain=False,
+        enable_coinbase=False,
+        enable_coingecko=False,
+        enable_polymarket=False,
+        enable_crypto_sentiment=False,
+        enable_stablecoins=False,
     ),
 }
 
@@ -122,6 +144,21 @@ class ResearchConfig:
 def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
     coinmetrics_dataset = f"coinmetrics_{asset.asset_id}_daily"
     etf_dataset = f"spot_{asset.asset_id}_etf_flows"
+    coinbase_endpoint = (
+        f"https://api.exchange.coinbase.com/products/{asset.coinbase_product}/candles"
+        if asset.enable_coinbase and asset.coinbase_product
+        else "not configured for this asset"
+    )
+    coingecko_endpoint = (
+        f"https://api.coingecko.com/api/v3/coins/{asset.coingecko_id}/market_chart/range"
+        if asset.enable_coingecko and asset.coingecko_id
+        else "not configured for this asset"
+    )
+    polymarket_endpoint = (
+        "https://gamma-api.polymarket.com/public-search | https://clob.polymarket.com/prices-history"
+        if asset.enable_polymarket
+        else "not configured for this asset"
+    )
     requested_fred_fields = [
         "us_10y_yield",
         "us_2y_yield",
@@ -143,10 +180,11 @@ def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
     specs = [
         SourceSpec(
             source="Coinbase Exchange",
-            endpoint=f"https://api.exchange.coinbase.com/products/{asset.coinbase_product}/candles",
+            endpoint=coinbase_endpoint,
             dataset=f"coinbase_{asset.asset_id}_usd_candles",
             requested_fields=["open", "high", "low", "close", "volume"],
             source_group="price",
+            is_used_in_model=asset.enable_coinbase,
         ),
         SourceSpec(
             source="Yahoo chart API",
@@ -157,7 +195,7 @@ def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
         ),
         SourceSpec(
             source="CoinGecko API",
-            endpoint=f"https://api.coingecko.com/api/v3/coins/{asset.coingecko_id}/market_chart/range",
+            endpoint=coingecko_endpoint,
             dataset=asset.coingecko_dataset,
             requested_fields=["price"],
             source_group="price",
@@ -225,6 +263,7 @@ def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
             dataset="alternative_fear_greed",
             requested_fields=["fear_greed_value", "fear_greed_label"],
             source_group="manual_csv",
+            is_used_in_model=asset.enable_crypto_sentiment,
         ),
         SourceSpec(
             source="Binance USD-M Futures",
@@ -281,10 +320,11 @@ def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
             dataset="defillama_stablecoins",
             requested_fields=["stablecoin_total_circulating_usd"],
             source_group="stablecoins",
+            is_used_in_model=asset.enable_stablecoins,
         ),
         SourceSpec(
             source="Polymarket Gamma/CLOB APIs",
-            endpoint="https://gamma-api.polymarket.com/public-search | https://clob.polymarket.com/prices-history",
+            endpoint=polymarket_endpoint,
             dataset=f"polymarket_{asset.asset_id}_monthly_ladders",
             requested_fields=[
                 "implied_median_price",

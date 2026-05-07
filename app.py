@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from research_config import get_asset_config
+from research_config import ASSET_CONFIGS, get_asset_config
 from schemas import (
     REQUIRED_OUTPUT_FILES,
     SchemaError,
@@ -22,7 +22,7 @@ OUTPUT_DIR = ROOT / "outputs"
 ASSET_OUTPUT_DIR = OUTPUT_DIR / "assets"
 
 
-st.set_page_config(page_title="Crypto Research Validity Report", page_icon="C", layout="wide")
+st.set_page_config(page_title="Multi-Asset Research Validity Report", page_icon="C", layout="wide")
 
 st.markdown(
     """
@@ -172,7 +172,7 @@ def calibration_chart(calibration: pd.DataFrame, horizon: int, window_type: str,
 
 selected_asset = st.sidebar.selectbox(
     "Asset",
-    ["btc", "sol"],
+    list(ASSET_CONFIGS),
     format_func=lambda asset_id: get_asset_config(asset_id).display_name,
 )
 asset_config = get_asset_config(selected_asset)

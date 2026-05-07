@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--refresh", action="store_true", help="Refresh free data sources and run the full offline research pass.")
     mode.add_argument("--quick", action="store_true", help="Use cached data where possible and run the smaller validation pass.")
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR), help="Directory for precomputed output files.")
-    parser.add_argument("--asset", default="btc", choices=["btc", "sol", "all"], help="Asset to run: btc, sol, or all.")
+    parser.add_argument("--asset", default="btc", choices=list(ASSET_CONFIGS) + ["all"], help="Asset to run: btc, sol, spx, or all.")
     return parser.parse_args()
 
 
@@ -36,7 +36,13 @@ def mirror_btc_outputs(base_output_dir: Path, btc_output_dir: Path) -> None:
         if dst_csv.exists():
             shutil.rmtree(dst_csv)
         shutil.copytree(src_csv, dst_csv)
-    for filename in ["full_refresh_report.md", "full_refresh_diagnostics.md", "derivatives_recovery_report.md", "feature_pruning_summary.md"]:
+    for filename in [
+        "full_refresh_report.md",
+        "full_refresh_diagnostics.md",
+        "derivatives_recovery_report.md",
+        "feature_pruning_summary.md",
+        "edge_validation_report.md",
+    ]:
         src = btc_output_dir / filename
         if src.exists():
             shutil.copy2(src, base_output_dir / filename)

@@ -980,6 +980,15 @@ def candidate_feature_sets(feature_cols: Sequence[str], asset_id: str) -> Dict[s
                 "sol_price_risk_ecosystem": only("price_momentum_only", "risk_assets_only", "sol_ecosystem_only"),
             }
         )
+    if asset_id == "spx":
+        sets.update(
+            {
+                "spx_macro_risk": only("macro_liquidity_only", "dollar_rates_only", "risk_assets_only"),
+                "spx_rates_liquidity": only("macro_liquidity_only", "dollar_rates_only"),
+                "spx_cross_asset_risk": only("risk_assets_only"),
+                "spx_price_macro_risk": only("price_momentum_only", "macro_liquidity_only", "dollar_rates_only", "risk_assets_only"),
+            }
+        )
     return {name: list(dict.fromkeys(values)) for name, values in sets.items() if values}
 
 
@@ -1981,6 +1990,15 @@ def asset_specific_candidate_names(asset_id: str) -> List[str]:
             "sol_price_plus_ecosystem",
             "sol_price_risk_ecosystem",
         ]
+    if asset_id == "spx":
+        return [
+            "all_features",
+            "price_momentum_only",
+            "spx_macro_risk",
+            "spx_rates_liquidity",
+            "spx_cross_asset_risk",
+            "spx_price_macro_risk",
+        ]
     return ["all_features", "core_price_macro_risk", "price_momentum_only"]
 
 
@@ -1992,6 +2010,10 @@ def asset_specific_candidate_models(asset_id: str, candidate_name: str, base_ref
     if asset_id == "sol":
         if candidate_name in {"sol_dollar_rates_only", "price_momentum_only"}:
             return ["random_forest"]
+        return ["logistic_linear"]
+    if asset_id == "spx":
+        if candidate_name == "all_features":
+            return [base_reference_model] if base_reference_model else ["logistic_linear"]
         return ["logistic_linear"]
     return ["logistic_linear"]
 
@@ -2572,6 +2594,12 @@ def macro_candidate_names(asset_id: str) -> List[str]:
             "price_plus_macro",
             "sol_dollar_rates_only",
             "sol_macro_liquidity_price",
+        ]
+    if asset_id == "spx":
+        return [
+            "spx_macro_risk",
+            "spx_rates_liquidity",
+            "spx_price_macro_risk",
         ]
     return ["price_plus_macro", "core_price_macro_risk"]
 

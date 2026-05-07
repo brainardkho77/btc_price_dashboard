@@ -121,9 +121,10 @@ def synthetic_sol_raw(rows=900):
     )
 
 
-def test_asset_config_resolves_btc_and_sol_symbols():
+def test_asset_config_resolves_btc_sol_and_spx_symbols():
     btc = get_asset_config("btc")
     sol = get_asset_config("sol")
+    spx = get_asset_config("spx")
     assert btc.coinbase_product == "BTC-USD"
     assert btc.enable_derivatives is True
     assert btc.enable_onchain is True
@@ -132,6 +133,17 @@ def test_asset_config_resolves_btc_and_sol_symbols():
     assert sol.coingecko_id == "solana"
     assert sol.enable_derivatives is False
     assert sol.enable_onchain is False
+    assert spx.display_name == "S&P 500 / SPX"
+    assert spx.yahoo_symbol == "SPY"
+    assert spx.coinbase_product is None
+    assert spx.coingecko_id is None
+    assert spx.enable_coinbase is False
+    assert spx.enable_coingecko is False
+    assert spx.enable_derivatives is False
+    assert spx.enable_onchain is False
+    assert spx.enable_polymarket is False
+    assert spx.enable_crypto_sentiment is False
+    assert spx.enable_stablecoins is False
 
 
 def test_sol_source_specs_record_skipped_sources_honestly():
@@ -146,6 +158,21 @@ def test_sol_source_specs_record_skipped_sources_honestly():
     etf = availability[availability["dataset"] == "spot_sol_etf_flows"].iloc[0]
     assert etf["status"] == "unavailable"
     assert bool(etf["is_used_in_model"]) is False
+
+
+def test_spx_source_specs_mark_crypto_native_sources_not_used():
+    spx = get_asset_config("spx")
+    specs = {spec.dataset: spec for spec in build_source_specs(spx)}
+    assert specs["coinbase_spx_usd_candles"].endpoint == "not configured for this asset"
+    assert specs["coinbase_spx_usd_candles"].is_used_in_model is False
+    assert specs["yahoo_spx_usd"].endpoint.endswith("/SPY")
+    assert specs["coingecko_spx_usd"].endpoint == "not configured for this asset"
+    assert specs["coingecko_spx_usd"].is_used_in_model is False
+    assert specs["coinmetrics_spx_daily"].is_used_in_model is False
+    assert specs["alternative_fear_greed"].is_used_in_model is False
+    assert specs["defillama_stablecoins"].is_used_in_model is False
+    assert specs["polymarket_spx_monthly_ladders"].endpoint == "not configured for this asset"
+    assert specs["polymarket_spx_monthly_ladders"].is_used_in_model is False
 
 
 def test_fred_api_key_is_environment_only_and_source_specs_include_fallback(monkeypatch, tmp_path):
@@ -209,6 +236,42 @@ def test_sol_target_generation_uses_future_sol_prices_only():
     assert np.isclose(frame.loc[row_date, "target_log_return"], expected)
     assert pd.isna(frame["target_log_return"].iloc[-1])
     assert "cross_asset_btc_ret_30d" in feature_result.features.columns
+
+
+def test_spx_yahoo_target_uses_adjusted_close_when_available(monkeypatch, tmp_path):
+    dates = pd.date_range("2024-01-01", periods=4, freq="D")
+    chart = pd.DataFrame(
+        {
+            "open": [100.0, 101.0, 102.0, 103.0],
+            "high": [101.0, 102.0, 103.0, 104.0],
+            "low": [99.0, 100.0, 101.0, 102.0],
+            "close": [100.0, 101.0, 102.0, 103.0],
+            "adjclose": [90.0, 91.0, 92.0, 93.0],
+            "volume": [1_000, 1_100, 1_200, 1_300],
+        },
+        index=dates,
+    )
+    monkeypatch.setattr(rp, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(rp, "fetch_yahoo_chart", lambda symbol: chart)
+    frame = rp.fetch_yahoo_asset_price(get_asset_config("spx"), force=True)
+    assert frame["asset_close"].tolist() == [90.0, 91.0, 92.0, 93.0]
+    assert frame.attrs["adjusted_close_used"] is True
+
+
+def test_spx_feature_generation_has_no_same_target_spx_proxy_when_raw_is_filtered():
+    raw = synthetic_research_raw(rows=900).rename(
+        columns={
+            "btc_open": "asset_open",
+            "btc_high": "asset_high",
+            "btc_low": "asset_low",
+            "btc_close": "asset_close",
+            "btc_volume": "asset_volume",
+        }
+    )
+    raw = raw.drop(columns=["spx_close"], errors="ignore")
+    feature_result = build_features(raw, ResearchConfig())
+    assert "cross_asset_spx_ret_30d" not in feature_result.features.columns
+    assert "cross_asset_spx_ret_30d" not in feature_result.feature_cols
 
 
 def test_solana_ecosystem_features_are_audited_and_candidate_packed():
@@ -998,6 +1061,12 @@ def test_candidate_feature_sets_keep_polymarket_diagnostic_only():
     assert "sol_ecosystem_pack" in sol_sets
     assert "solana_ecosystem_tvl_chg_30d" in sol_sets["sol_ecosystem_pack"]
     assert "sol_price_plus_ecosystem" in sol_sets
+    spx_sets = candidate_feature_sets(cols, "spx")
+    assert "spx_macro_risk" in spx_sets
+    assert "spx_rates_liquidity" in spx_sets
+    assert "spx_cross_asset_risk" in spx_sets
+    assert "spx_price_macro_risk" in spx_sets
+    assert "polymarket_ladder_skew" not in spx_sets["all_features"]
 
 
 def test_nested_feature_pruning_uses_train_columns_only_and_drops_correlated_features():

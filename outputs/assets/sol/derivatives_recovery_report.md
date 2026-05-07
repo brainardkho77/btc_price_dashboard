@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `sol_research_20260506T171530Z`
+- Run ID: `sol_research_20260507T093741Z`
 - Selected model: `logistic_linear`
 - Signal: `neutral`
 - Reliability: `Medium confidence`

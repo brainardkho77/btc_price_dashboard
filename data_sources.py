@@ -236,12 +236,16 @@ def fetch_yahoo_chart(symbol: str, start: str = "2014-01-01", end: Optional[str]
     payload = result[0]
     timestamps = payload.get("timestamp") or []
     quote_payload = (payload.get("indicators", {}).get("quote") or [{}])[0]
+    adjclose_payload = (payload.get("indicators", {}).get("adjclose") or [{}])[0]
     frame = pd.DataFrame(quote_payload)
+    if adjclose_payload and "adjclose" in adjclose_payload:
+        frame["adjclose"] = adjclose_payload["adjclose"]
     frame["date"] = pd.to_datetime(timestamps, unit="s", utc=True).date
     frame["date"] = pd.to_datetime(frame["date"])
     frame = frame.set_index("date").sort_index()
     frame = frame.rename(columns={c: c.lower() for c in frame.columns})
-    return frame[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
+    keep = [col for col in ["open", "high", "low", "close", "adjclose", "volume"] if col in frame]
+    return frame[keep].apply(pd.to_numeric, errors="coerce")
 
 
 def fetch_btc_price(force: bool = False) -> pd.DataFrame:

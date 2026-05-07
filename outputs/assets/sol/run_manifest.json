@@ -1,12 +1,12 @@
 {
   "asset_id": "sol",
   "asset_name": "SOL",
-  "config_hash": "43c0139fc6cdfc3d",
-  "created_at": "2026-05-06T17:15:30+00:00",
-  "data_snapshot_hash": "7d57b79846ed2065",
-  "end_date": "2026-05-06",
+  "config_hash": "1ada18a4b13f8878",
+  "created_at": "2026-05-07T09:37:41+00:00",
+  "data_snapshot_hash": "ca357d9c81214585",
+  "end_date": "2026-05-07",
   "features_count": 178,
-  "git_commit": "83ee79aa4d6515cfd0f1de6a13063bbbd3e5a3d7",
+  "git_commit": "7207b5699161044f320ba3a3c6f88db5c548c260",
   "models_run": [
     "buy_hold_direction",
     "momentum_30d",
@@ -27,7 +27,7 @@
   "platform": "macOS-15.1.1-arm64-arm-64bit",
   "python_version": "3.9.6 (default, Nov 11 2024, 03:15:38)  [Clang 16.0.0 (clang-1600.0.26.6)]",
   "quick_mode": false,
-  "run_id": "sol_research_20260506T171530Z",
+  "run_id": "sol_research_20260507T093741Z",
   "schema_version": "1.0",
   "start_date": "2020-04-10",
   "warnings": [

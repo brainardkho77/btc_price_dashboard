@@ -1,0 +1,1 @@
+run_id,asset_id,horizon,window_type,model_name,polymarket_included,n_features,n_polymarket_features,n_samples,directional_accuracy,balanced_accuracy,brier_score,calibration_error,sharpe,max_drawdown,net_return,beats_buy_hold,beats_momentum_30d,beats_momentum_90d,beats_random_baseline,reliability_label,passes_official_gates

@@ -516,6 +516,8 @@ def _load_derivative_source(
 
 
 def fetch_coinbase_asset_usd(asset: AssetConfig, start_date: str, end_date: Optional[str]) -> pd.DataFrame:
+    if not asset.enable_coinbase or not asset.coinbase_product:
+        raise RuntimeError(f"Coinbase price is not configured for {asset.display_name}.")
     start = pd.Timestamp(start_date, tz="UTC")
     end = pd.Timestamp(end_date, tz="UTC") if end_date else pd.Timestamp.utcnow().tz_convert("UTC").normalize()
     cursor = start
@@ -569,6 +571,11 @@ def fetch_yahoo_asset_price(asset: AssetConfig, *, force: bool = False) -> pd.Da
         if cached is not None and not cached.empty:
             return cached
     chart = fetch_yahoo_chart(asset.yahoo_symbol)
+    adjusted_close_used = False
+    if asset.asset_id == "spx" and "adjclose" in chart.columns:
+        chart = chart.copy()
+        chart["close"] = chart["adjclose"].combine_first(chart["close"])
+        adjusted_close_used = True
     frame = chart.rename(
         columns={
             "open": "asset_open",
@@ -578,10 +585,13 @@ def fetch_yahoo_asset_price(asset: AssetConfig, *, force: bool = False) -> pd.Da
             "volume": "asset_volume",
         }
     )
+    frame.attrs["adjusted_close_used"] = adjusted_close_used
     return _write_cached_dataset(dataset, frame)
 
 
 def fetch_coingecko_asset_usd(asset: AssetConfig, start_date: str, end_date: Optional[str]) -> pd.DataFrame:
+    if not asset.enable_coingecko or not asset.coingecko_id:
+        raise RuntimeError(f"CoinGecko price is not configured for {asset.display_name}.")
     start_ts = int(pd.Timestamp(start_date, tz="UTC").timestamp())
     end_ts = int((pd.Timestamp(end_date, tz="UTC") if end_date else pd.Timestamp.utcnow()).timestamp())
     response = requests.get(
@@ -1433,16 +1443,27 @@ def load_research_data(
     coinmetrics_dataset = f"coinmetrics_{asset.asset_id}_daily"
     etf_dataset = f"spot_{asset.asset_id}_etf_flows"
 
-    coinbase, record = _load_source(
-        run_id,
-        generated_at,
-        coinbase_dataset,
-        lambda: fetch_coinbase_asset_usd(asset, effective_start, config.end_date),
-        quick=quick and not refresh,
-        allow_quick_fetch=True,
-        source_specs=source_specs,
-    )
-    coinbase = _normalize_asset_price_frame(coinbase)
+    if asset.enable_coinbase:
+        coinbase, record = _load_source(
+            run_id,
+            generated_at,
+            coinbase_dataset,
+            lambda: fetch_coinbase_asset_usd(asset, effective_start, config.end_date),
+            quick=quick and not refresh,
+            allow_quick_fetch=True,
+            source_specs=source_specs,
+        )
+        coinbase = _normalize_asset_price_frame(coinbase)
+    else:
+        coinbase = None
+        record = _availability_record(
+            run_id,
+            generated_at,
+            _source_spec(coinbase_dataset, source_specs),
+            "skipped",
+            failure_reason=f"{asset.display_name} uses Yahoo {asset.yahoo_symbol}; Coinbase is not applicable.",
+            used_override=False,
+        )
     records.append(record)
 
     yahoo_asset, record = _load_source(
@@ -1455,6 +1476,8 @@ def load_research_data(
         source_specs=source_specs,
     )
     yahoo_asset = _normalize_asset_price_frame(yahoo_asset)
+    if asset.asset_id == "spx" and yahoo_asset is not None and not bool(yahoo_asset.attrs.get("adjusted_close_used", False)):
+        warnings.append("Yahoo SPY adjusted close was unavailable; asset_close used raw close.")
     records.append(record)
 
     if coinbase is not None and len(coinbase.dropna(subset=["asset_close"])) >= 365:
@@ -1464,7 +1487,7 @@ def load_research_data(
     elif yahoo_asset is not None:
         price = yahoo_asset.copy()
         warnings.append(f"Coinbase price was unavailable or sparse; Yahoo {asset.yahoo_symbol} was used as fallback.")
-    else:
+    elif asset.enable_coingecko:
         coingecko, record = _load_source(
             run_id,
             generated_at,
@@ -1480,6 +1503,18 @@ def load_research_data(
         if coingecko is None:
             raise RuntimeError(f"No {asset.display_name} price source worked; cannot build research dataset.")
         price = coingecko.copy()
+    else:
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                _source_spec(asset.coingecko_dataset, source_specs),
+                "skipped",
+                failure_reason=f"{asset.display_name} uses Yahoo {asset.yahoo_symbol}; CoinGecko is not applicable.",
+                used_override=False,
+            )
+        )
+        raise RuntimeError(f"No {asset.display_name} Yahoo price source worked; no fallback is configured.")
 
     if asset.coingecko_dataset not in [r["dataset"] for r in records]:
         records.append(
@@ -1495,21 +1530,33 @@ def load_research_data(
 
     frames: List[pd.DataFrame] = [price]
     polymarket_dataset = f"polymarket_{asset.asset_id}_monthly_ladders"
-    polymarket, record = _load_source(
-        run_id,
-        generated_at,
-        polymarket_dataset,
-        lambda: fetch_polymarket_asset_monthly_ladders(asset, price, quick=quick),
-        quick=quick and not refresh,
-        allow_quick_fetch=True,
-        used_override=False,
-        source_specs=source_specs,
-    )
-    records.append(record)
-    if polymarket is not None and not polymarket.empty:
-        frames.append(polymarket)
-        warnings.append(
-            "Polymarket monthly ladder data is loaded for diagnostics only; it is excluded from official model selection unless future validation gates pass."
+    if asset.enable_polymarket:
+        polymarket, record = _load_source(
+            run_id,
+            generated_at,
+            polymarket_dataset,
+            lambda: fetch_polymarket_asset_monthly_ladders(asset, price, quick=quick),
+            quick=quick and not refresh,
+            allow_quick_fetch=True,
+            used_override=False,
+            source_specs=source_specs,
+        )
+        records.append(record)
+        if polymarket is not None and not polymarket.empty:
+            frames.append(polymarket)
+            warnings.append(
+                "Polymarket monthly ladder data is loaded for diagnostics only; it is excluded from official model selection unless future validation gates pass."
+            )
+    else:
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                _source_spec(polymarket_dataset, source_specs),
+                "skipped",
+                failure_reason=f"{asset.display_name} v1 disables Polymarket diagnostics; not fabricated.",
+                used_override=False,
+            )
         )
 
     fred_api_spec = _source_spec("fred_macro_api", source_specs)
@@ -1593,9 +1640,33 @@ def load_research_data(
 
     loaders: List[Tuple[str, Callable[[], pd.DataFrame], bool]] = [
         ("yahoo_market_proxies", lambda: fetch_market_proxies(force=refresh), True),
-        ("alternative_fear_greed", lambda: fetch_fear_greed(force=refresh), True),
-        ("defillama_stablecoins", fetch_defillama_stablecoins, True),
     ]
+    if asset.enable_crypto_sentiment:
+        loaders.append(("alternative_fear_greed", lambda: fetch_fear_greed(force=refresh), True))
+    else:
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                _source_spec("alternative_fear_greed", source_specs),
+                "skipped",
+                failure_reason=f"{asset.display_name} v1 disables crypto sentiment; not fabricated.",
+                used_override=False,
+            )
+        )
+    if asset.enable_stablecoins:
+        loaders.append(("defillama_stablecoins", fetch_defillama_stablecoins, True))
+    else:
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                _source_spec("defillama_stablecoins", source_specs),
+                "skipped",
+                failure_reason=f"{asset.display_name} v1 disables stablecoin factors; not fabricated.",
+                used_override=False,
+            )
+        )
     if asset.asset_id == "sol":
         loaders.extend(
             [
@@ -1618,8 +1689,11 @@ def load_research_data(
             allow_quick_fetch=allow_quick_fetch,
             source_specs=source_specs,
         )
-        if dataset == "yahoo_market_proxies" and frame is not None and asset.asset_id == "btc":
-            frame = frame.drop(columns=["btc_proxy_close"], errors="ignore")
+        if dataset == "yahoo_market_proxies" and frame is not None:
+            if asset.asset_id == "btc":
+                frame = frame.drop(columns=["btc_proxy_close"], errors="ignore")
+            if asset.asset_id == "spx":
+                frame = frame.drop(columns=["spx_close"], errors="ignore")
         records.append(record)
         if frame is not None and not frame.empty:
             frames.append(frame)

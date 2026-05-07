@@ -1,0 +1,145 @@
+feature_name,source,raw_metric,transform,lag_days,release_delay_days,first_date,last_date,missing_pct,used_in_model
+trend_log_price,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+momentum_ret_7d,price,asset_close,price/technical transform,0,0,2015-01-09,2026-05-07,0.0016891891891891442,True
+momentum_ret_14d,price,asset_close,price/technical transform,0,0,2015-01-16,2026-05-07,0.0033783783783783994,True
+momentum_ret_30d,price,asset_close,price/technical transform,0,0,2015-02-01,2026-05-07,0.007239382239382253,True
+momentum_ret_60d,price,asset_close,price/technical transform,0,0,2015-03-03,2026-05-07,0.014478764478764505,True
+momentum_ret_90d,price,asset_close,price/technical transform,0,0,2015-04-02,2026-05-07,0.021718146718146758,True
+momentum_ret_180d,price,asset_close,price/technical transform,0,0,2015-07-01,2026-05-07,0.043436293436293405,True
+momentum_ret_365d,price,asset_close,price/technical transform,0,0,2016-01-02,2026-05-07,0.08807915057915061,True
+trend_dist_sma_10d,price,asset_close,price/technical transform,0,0,2015-01-06,2026-05-07,0.0009652509652510188,True
+trend_dist_sma_20d,price,asset_close,price/technical transform,0,0,2015-01-11,2026-05-07,0.002171814671814709,True
+trend_dist_sma_50d,price,asset_close,price/technical transform,0,0,2015-01-26,2026-05-07,0.00579150579150578,True
+trend_dist_sma_100d,price,asset_close,price/technical transform,0,0,2015-02-20,2026-05-07,0.011824324324324342,True
+trend_dist_sma_200d,price,asset_close,price/technical transform,0,0,2015-04-11,2026-05-07,0.023889961389961356,True
+trend_macd_pct,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+trend_macd_signal_pct,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+momentum_rsi_14d,price,asset_close,price/technical transform,0,0,2015-01-05,2026-05-07,0.0007239382239382364,True
+volatility_realized_7d,price,asset_close,price/technical transform,0,0,2015-01-07,2026-05-07,0.0012065637065636903,True
+volatility_realized_14d,price,asset_close,price/technical transform,0,0,2015-01-09,2026-05-07,0.0016891891891891442,True
+volatility_realized_30d,price,asset_close,price/technical transform,0,0,2015-01-17,2026-05-07,0.003619691119691071,True
+volatility_realized_90d,price,asset_close,price/technical transform,0,0,2015-02-16,2026-05-07,0.010859073359073323,True
+volatility_drawdown_90d,price,asset_close,price/technical transform,0,0,2015-01-31,2026-05-07,0.00699806949806947,True
+volatility_drawdown_365d,price,asset_close,price/technical transform,0,0,2015-05-01,2026-05-07,0.028716216216216228,True
+trend_dist_ath,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+volatility_intraday_range,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+volume_log,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+volume_z_30d,price,asset_close,price/technical transform,0,0,2015-01-16,2026-05-07,0.0033783783783783994,True
+volume_z_90d,price,asset_close,price/technical transform,0,0,2015-01-31,2026-05-07,0.00699806949806947,True
+volume_trend_30d,price,asset_close,price/technical transform,0,0,2015-01-31,2026-05-07,0.00699806949806947,True
+cross_asset_btc_ret_1d,price,btc_proxy_close,cross-asset price transform,0,0,2015-01-04,2026-05-07,0.0004826254826254539,True
+cross_asset_btc_ret_7d,price,btc_proxy_close,cross-asset price transform,0,0,2015-01-10,2026-05-07,0.0019305019305019266,True
+cross_asset_btc_ret_30d,price,btc_proxy_close,cross-asset price transform,0,0,2015-02-02,2026-05-07,0.007480694980695035,True
+cross_asset_btc_z_365d,price,btc_proxy_close,cross-asset price transform,0,0,2015-05-02,2026-05-07,0.02895752895752901,True
+cross_asset_eth_ret_1d,price,eth,cross-asset price transform,0,0,2017-11-11,2026-05-07,0.2519305019305019,True
+cross_asset_eth_ret_7d,price,eth,cross-asset price transform,0,0,2017-11-17,2026-05-07,0.2533783783783784,True
+cross_asset_eth_ret_30d,price,eth,cross-asset price transform,0,0,2017-12-10,2026-05-07,0.2589285714285714,True
+cross_asset_eth_z_365d,price,eth_z_365d,cross-asset price transform,0,0,2018-03-09,2026-05-07,0.2804054054054054,True
+cross_asset_nasdaq_ret_1d,price,nasdaq,cross-asset price transform,0,0,2015-01-04,2026-05-07,0.0004826254826254539,True
+cross_asset_nasdaq_ret_7d,price,nasdaq,cross-asset price transform,0,0,2015-01-10,2026-05-07,0.0019305019305019266,True
+cross_asset_nasdaq_ret_30d,price,nasdaq,cross-asset price transform,0,0,2015-02-02,2026-05-07,0.007480694980695035,True
+cross_asset_nasdaq_z_365d,price,nasdaq_z_365d,cross-asset price transform,0,0,2015-05-02,2026-05-07,0.02895752895752901,True
+cross_asset_gold_ret_1d,price,gold,cross-asset price transform,0,0,2015-01-04,2026-05-07,0.0004826254826254539,True
+cross_asset_gold_ret_7d,price,gold,cross-asset price transform,0,0,2015-01-10,2026-05-07,0.0019305019305019266,True
+cross_asset_gold_ret_30d,price,gold,cross-asset price transform,0,0,2015-02-02,2026-05-07,0.007480694980695035,True
+cross_asset_gold_z_365d,price,gold_z_365d,cross-asset price transform,0,0,2015-05-02,2026-05-07,0.02895752895752901,True
+cross_asset_tlt_ret_1d,price,tlt,cross-asset price transform,0,0,2015-01-04,2026-05-07,0.0004826254826254539,True
+cross_asset_tlt_ret_7d,price,tlt,cross-asset price transform,0,0,2015-01-10,2026-05-07,0.0019305019305019266,True
+cross_asset_tlt_ret_30d,price,tlt,cross-asset price transform,0,0,2015-02-02,2026-05-07,0.007480694980695035,True
+cross_asset_tlt_z_365d,price,tlt_z_365d,cross-asset price transform,0,0,2015-05-02,2026-05-07,0.02895752895752901,True
+macro_dxy_ret_1d,fred_macro_daily,dxy_ret_1d,macro transform,2,2,2015-01-04,2026-05-07,0.0004826254826254539,True
+macro_dxy_ret_7d,fred_macro_daily,dxy_ret_7d,macro transform,2,2,2015-01-10,2026-05-07,0.0019305019305019266,True
+macro_dxy_ret_30d,fred_macro_daily,dxy_ret_30d,macro transform,2,2,2015-02-02,2026-05-07,0.007480694980695035,True
+macro_dxy_z_365d,fred_macro_daily,dxy,macro transform,2,2,2015-05-02,2026-05-07,0.02895752895752901,True
+macro_vix_ret_1d,fred_macro_daily,vix_ret_1d,macro transform,2,2,2015-01-04,2026-05-07,0.0004826254826254539,True
+macro_vix_ret_7d,fred_macro_daily,vix_ret_7d,macro transform,2,2,2015-01-10,2026-05-07,0.0019305019305019266,True
+macro_vix_ret_30d,fred_macro_daily,vix_ret_30d,macro transform,2,2,2015-02-02,2026-05-07,0.007480694980695035,True
+macro_vix_z_365d,fred_macro_daily,vix,macro transform,2,2,2015-05-02,2026-05-07,0.02895752895752901,True
+macro_us_10y_yield,fred_macro_daily,us_10y_yield,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_us_10y_yield_chg_7d,fred_macro_daily,us_10y_yield,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_us_10y_yield_chg_30d,fred_macro_daily,us_10y_yield,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_us_10y_yield_chg_90d,fred_macro_daily,us_10y_yield,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_us_10y_yield_z_365d,fred_macro_daily,us_10y_yield,macro transform,2,2,2015-05-04,2026-05-07,0.029440154440154465,True
+macro_us_2y_yield,fred_macro_daily,us_2y_yield,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_us_2y_yield_chg_7d,fred_macro_daily,us_2y_yield,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_us_2y_yield_chg_30d,fred_macro_daily,us_2y_yield,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_us_2y_yield_chg_90d,fred_macro_daily,us_2y_yield,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_us_2y_yield_z_365d,fred_macro_daily,us_2y_yield,macro transform,2,2,2015-05-04,2026-05-07,0.029440154440154465,True
+macro_real_10y_yield,fred_macro_daily,real_10y_yield,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_real_10y_yield_chg_7d,fred_macro_daily,real_10y_yield,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_real_10y_yield_chg_30d,fred_macro_daily,real_10y_yield,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_real_10y_yield_chg_90d,fred_macro_daily,real_10y_yield,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_real_10y_yield_z_365d,fred_macro_daily,real_10y_yield,macro transform,2,2,2015-05-04,2026-05-07,0.029440154440154465,True
+macro_real_5y_yield,fred_macro_daily,real_5y_yield,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_real_5y_yield_chg_7d,fred_macro_daily,real_5y_yield,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_real_5y_yield_chg_30d,fred_macro_daily,real_5y_yield,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_real_5y_yield_chg_90d,fred_macro_daily,real_5y_yield,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_real_5y_yield_z_365d,fred_macro_daily,real_5y_yield,macro transform,2,2,2015-05-04,2026-05-07,0.029440154440154465,True
+macro_us_3m_bill_rate,fred_macro_monthly,us_3m_bill_rate,macro transform,30,30,2015-02-02,2026-05-07,0.007480694980695035,True
+macro_us_3m_bill_rate_chg_7d,fred_macro_monthly,us_3m_bill_rate_chg_7d,macro transform,30,30,2015-02-09,2026-05-07,0.00916988416988418,True
+macro_us_3m_bill_rate_chg_30d,fred_macro_monthly,us_3m_bill_rate_chg_30d,macro transform,30,30,2015-03-04,2026-05-07,0.014720077220077177,True
+macro_us_3m_bill_rate_chg_90d,fred_macro_monthly,us_3m_bill_rate_chg_90d,macro transform,30,30,2015-05-03,2026-05-07,0.029198841698841682,True
+macro_us_3m_bill_rate_z_365d,fred_macro_monthly,us_3m_bill_rate,macro transform,30,30,2015-06-01,2026-05-07,0.03619691119691115,True
+macro_us_10y_2y_spread,fred_macro_daily,us_10y_2y_spread,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_us_10y_2y_spread_chg_7d,fred_macro_daily,us_10y_2y_spread,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_us_10y_2y_spread_chg_30d,fred_macro_daily,us_10y_2y_spread,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_us_10y_2y_spread_chg_90d,fred_macro_daily,us_10y_2y_spread,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_us_10y_2y_spread_z_365d,fred_macro_daily,us_10y_2y_spread,macro transform,2,2,2015-05-04,2026-05-07,0.029440154440154465,True
+macro_us_10y_breakeven,fred_macro_daily,us_10y_breakeven,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_us_10y_breakeven_chg_7d,fred_macro_daily,us_10y_breakeven,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_us_10y_breakeven_chg_30d,fred_macro_daily,us_10y_breakeven,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_us_10y_breakeven_chg_90d,fred_macro_daily,us_10y_breakeven,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_us_10y_breakeven_z_365d,fred_macro_daily,us_10y_breakeven,macro transform,2,2,2015-05-04,2026-05-07,0.029440154440154465,True
+macro_inflation_expectations_5y5y,fred_macro_daily,inflation_expectations_5y5y,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_inflation_expectations_5y5y_chg_7d,fred_macro_daily,inflation_expectations_5y5y,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_inflation_expectations_5y5y_chg_30d,fred_macro_daily,inflation_expectations_5y5y,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_inflation_expectations_5y5y_chg_90d,fred_macro_daily,inflation_expectations_5y5y,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_inflation_expectations_5y5y_z_365d,fred_macro_daily,inflation_expectations_5y5y,macro transform,2,2,2015-05-04,2026-05-07,0.029440154440154465,True
+macro_financial_stress_index,fred_macro_daily,financial_stress_index,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_financial_stress_index_chg_7d,fred_macro_daily,financial_stress_index,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_financial_stress_index_chg_30d,fred_macro_daily,financial_stress_index,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_financial_stress_index_chg_90d,fred_macro_daily,financial_stress_index,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_financial_stress_index_z_365d,fred_macro_daily,financial_stress_index,macro transform,2,2,2015-05-04,2026-05-07,0.029440154440154465,True
+macro_effective_fed_funds_rate,fred_macro_daily,effective_fed_funds_rate,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_effective_fed_funds_rate_chg_7d,fred_macro_daily,effective_fed_funds_rate,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_effective_fed_funds_rate_chg_30d,fred_macro_daily,effective_fed_funds_rate,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_effective_fed_funds_rate_chg_90d,fred_macro_daily,effective_fed_funds_rate,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_effective_fed_funds_rate_z_365d,fred_macro_daily,effective_fed_funds_rate,macro transform,2,2,2015-05-04,2026-05-07,0.04295366795366795,True
+macro_fed_funds_rate,fred_macro_daily,fed_funds_rate,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_fed_funds_rate_chg_7d,fred_macro_daily,fed_funds_rate,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_fed_funds_rate_chg_30d,fred_macro_daily,fed_funds_rate,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_fed_funds_rate_chg_90d,fred_macro_daily,fed_funds_rate,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_fed_funds_rate_z_365d,fred_macro_daily,fed_funds_rate,macro transform,2,2,2015-05-04,2026-05-07,0.04295366795366795,True
+macro_reverse_repo,fred_macro_daily,reverse_repo,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_reverse_repo_chg_7d,fred_macro_daily,reverse_repo,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_reverse_repo_chg_30d,fred_macro_daily,reverse_repo,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_reverse_repo_chg_90d,fred_macro_daily,reverse_repo,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_reverse_repo_z_365d,fred_macro_daily,reverse_repo,macro transform,2,2,2015-05-04,2026-05-07,0.029440154440154465,True
+macro_treasury_general_account,fred_macro_monthly,treasury_general_account,macro transform,30,30,2015-02-07,2026-05-07,0.008687258687258725,True
+macro_treasury_general_account_chg_7d,fred_macro_monthly,treasury_general_account_chg_7d,macro transform,30,30,2015-02-14,2026-05-07,0.01037644787644787,True
+macro_treasury_general_account_chg_30d,fred_macro_monthly,treasury_general_account_chg_30d,macro transform,30,30,2015-03-09,2026-05-07,0.015926640926640978,True
+macro_treasury_general_account_chg_90d,fred_macro_monthly,treasury_general_account_chg_90d,macro transform,30,30,2015-05-08,2026-05-07,0.030405405405405372,True
+macro_treasury_general_account_z_365d,fred_macro_monthly,treasury_general_account,macro transform,30,30,2015-06-12,2026-05-07,0.038851351351351315,True
+macro_trade_weighted_usd,fred_macro_daily,trade_weighted_usd,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_trade_weighted_usd_chg_7d,fred_macro_daily,trade_weighted_usd,macro transform,2,2,2015-01-12,2026-05-07,0.0024131274131273805,True
+macro_trade_weighted_usd_chg_30d,fred_macro_daily,trade_weighted_usd,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_trade_weighted_usd_chg_90d,fred_macro_daily,trade_weighted_usd,macro transform,2,2,2015-04-05,2026-05-07,0.022442084942084994,True
+macro_trade_weighted_usd_z_365d,fred_macro_daily,trade_weighted_usd,macro transform,2,2,2015-05-04,2026-05-07,0.029440154440154465,True
+macro_us_10y_2y_spread_calc,fred_macro_daily,us_10y_2y_spread_calc,macro transform,2,2,2015-01-05,2026-05-07,0.0007239382239382364,True
+macro_us_10y_2y_spread_calc_chg_30d,fred_macro_daily,us_10y_2y_spread_calc,macro transform,2,2,2015-02-04,2026-05-07,0.007963320463320489,True
+macro_us_10y_3m_spread_calc,fred_macro_daily,us_10y_3m_spread_calc,macro transform,2,2,2015-02-02,2026-05-07,0.007480694980695035,True
+macro_us_10y_3m_spread_calc_chg_30d,fred_macro_daily,us_10y_3m_spread_calc,macro transform,2,2,2015-03-04,2026-05-07,0.014720077220077177,True
+macro_fed_balance_sheet_ret_30d,fred_macro_monthly,fed_balance_sheet,macro transform,30,30,2015-03-15,2026-05-07,0.01737451737451734,True
+macro_fed_balance_sheet_ret_90d,fred_macro_monthly,fed_balance_sheet,macro transform,30,30,2015-05-14,2026-05-07,0.031853281853281845,True
+macro_fed_balance_sheet_z_365d,fred_macro_monthly,fed_balance_sheet,macro transform,30,30,2015-06-12,2026-05-07,0.038851351351351315,True
+macro_m2_money_supply_ret_30d,fred_macro_monthly,m2_money_supply,macro transform,30,30,2015-04-02,2026-05-07,0.021718146718146758,True
+macro_m2_money_supply_ret_90d,fred_macro_monthly,m2_money_supply,macro transform,30,30,2015-06-01,2026-05-07,0.03619691119691115,True
+macro_m2_money_supply_z_365d,fred_macro_monthly,m2_money_supply,macro transform,30,30,2015-06-30,2026-05-07,0.043194980694980734,True
+macro_treasury_general_account_ret_30d,fred_macro_monthly,treasury_general_account,macro transform,30,30,2015-03-15,2026-05-07,0.01737451737451734,True
+macro_treasury_general_account_ret_90d,fred_macro_monthly,treasury_general_account,macro transform,30,30,2015-05-14,2026-05-07,0.031853281853281845,True
+cycle_days_since_halving,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+cycle_progress,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+cycle_sin_4y,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+cycle_cos_4y,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+cycle_month_sin,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True
+cycle_month_cos,price,asset_close,price/technical transform,0,0,2015-01-02,2026-05-07,0.0,True

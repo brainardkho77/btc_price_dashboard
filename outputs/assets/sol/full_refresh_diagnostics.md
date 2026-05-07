@@ -1,14 +1,14 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `sol_research_20260506T171530Z`
+- Full refresh run ID: `sol_research_20260507T093741Z`
 - Selected model: `logistic_linear`
 - Signal: `neutral`
 - Reliability: `Medium confidence`
 - no_valid_edge triggered correctly: `False`
 
 ## Why Quick Mode Looked Better
-Quick mode used `2020-04-10` to `2026-05-04` with `48` 30d official samples and selected `random_forest`. Full refresh used `2020-04-10` to `2026-05-06` with `36` 30d official samples and selected `logistic_linear`. The quick edge disappeared because the broader 2015+ sample added regimes where the ML models did not beat the 90d momentum baseline or the full baseline set after costs.
+Quick mode used `2020-04-10` to `2026-05-04` with `48` 30d official samples and selected `random_forest`. Full refresh used `2020-04-10` to `2026-05-07` with `36` 30d official samples and selected `logistic_linear`. The quick edge disappeared because the broader 2015+ sample added regimes where the ML models did not beat the 90d momentum baseline or the full baseline set after costs.
 
 ## 30d Official Model Comparison
 - Best ML model: `logistic_linear` with directional accuracy `69.4%`
@@ -24,13 +24,13 @@ Validation gates failed by ML model:
 - `dollar_rates_only` / `random_forest`: samples `36`, accuracy `72.2%`, net return `1080.1%`, reliability `Medium confidence`
 - `all_features` / `logistic_linear`: samples `36`, accuracy `69.4%`, net return `982.7%`, reliability `Medium confidence`
 - `macro_liquidity_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `772.7%`, reliability `Medium confidence`
-- `sol_ecosystem_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `1124.4%`, reliability `Medium confidence`
 - `sol_ecosystem_only` / `logistic_linear`: samples `36`, accuracy `66.7%`, net return `957.8%`, reliability `Medium confidence`
 - `price_momentum_only` / `logistic_linear`: samples `36`, accuracy `66.7%`, net return `544.6%`, reliability `Medium confidence`
 - `risk_assets_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `924.3%`, reliability `Medium confidence`
 - `risk_assets_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `824.7%`, reliability `Medium confidence`
 - `dollar_rates_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `1044.9%`, reliability `Medium confidence`
 - `macro_liquidity_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `644.6%`, reliability `Medium confidence`
+- `sol_ecosystem_only` / `random_forest`: samples `36`, accuracy `63.9%`, net return `1055.2%`, reliability `Medium confidence`
 
 ## Feature Group Watchlist
 - `dollar_rates_only` / `logistic_linear`: samples `36`, accuracy `63.9%`, Sharpe `1.28`, max drawdown `-37.4%`, Brier `0.256`, calibration error `0.105`, beats buy-hold `True`, beats momentum `True`.

@@ -1,2 +1,2 @@
 run_id,asset_id,source,status,rows,events,markets,first_date,last_date,missing_pct,used_in_model,failure_reason
-sol_research_20260506T171530Z,sol,Polymarket Gamma/CLOB APIs,worked,556,20,274,2024-10-02,2026-05-06,0.7376014427412083,False,
+sol_research_20260507T093741Z,sol,Polymarket Gamma/CLOB APIs,worked,557,20,274,2024-10-02,2026-05-07,0.7372690401081569,False,

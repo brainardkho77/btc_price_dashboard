@@ -1,0 +1,37 @@
+{
+  "asset_id": "spx",
+  "asset_name": "S&P 500 / SPX",
+  "config_hash": "bedd0ad9c1ef644f",
+  "created_at": "2026-05-07T09:47:19+00:00",
+  "data_snapshot_hash": "eb838cd633f9dd14",
+  "end_date": "2026-05-07",
+  "features_count": 144,
+  "git_commit": "7207b5699161044f320ba3a3c6f88db5c548c260",
+  "models_run": [
+    "buy_hold_direction",
+    "momentum_30d",
+    "momentum_90d",
+    "random_permutation",
+    "logistic_linear",
+    "hgb",
+    "random_forest"
+  ],
+  "package_versions": {
+    "numpy": "2.0.2",
+    "pandas": "2.3.2",
+    "plotly": "5.24.1",
+    "requests": "2.32.5",
+    "sklearn": "1.6.1",
+    "streamlit": "1.50.0"
+  },
+  "platform": "macOS-15.1.1-arm64-arm-64bit",
+  "python_version": "3.9.6 (default, Nov 11 2024, 03:15:38)  [Clang 16.0.0 (clang-1600.0.26.6)]",
+  "quick_mode": false,
+  "run_id": "spx_research_20260507T094719Z",
+  "schema_version": "1.0",
+  "start_date": "2015-01-02",
+  "warnings": [
+    "Coinbase price was unavailable or sparse; Yahoo SPY was used as fallback.",
+    "FRED and Coin Metrics are revised historical data unless point-in-time vintage data is added."
+  ]
+}

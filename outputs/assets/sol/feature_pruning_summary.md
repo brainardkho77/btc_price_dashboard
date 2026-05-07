@@ -2,15 +2,15 @@
 
 ## Run Summary
 - Asset: `SOL`
-- Run ID: `sol_research_20260506T171530Z`
+- Run ID: `sol_research_20260507T093741Z`
 - Selected model: `logistic_linear`
 - Signal: `neutral`
 - Reliability: `Medium confidence`
-- Current all-feature best ML: `logistic_linear` at `69.4%` accuracy, Brier `0.252`, net return `982.7%`.
+- Current all-feature best ML: `logistic_linear` at `69.4%` accuracy, Brier `0.253`, net return `982.7%`.
 - Best baseline: `random_permutation` at `55.6%` accuracy.
 
 ## Best Pruned Candidate
-- `all_features_official` / `logistic_linear`: samples `36`, accuracy `69.4%`, Brier `0.252`, calibration `0.128`, Sharpe `1.32`, drawdown `-37.4%`, net return `982.7%`.
+- `all_features_official` / `logistic_linear`: samples `36`, accuracy `69.4%`, Brier `0.253`, calibration `0.129`, Sharpe `1.32`, drawdown `-37.4%`, net return `982.7%`.
 - Stability evidence: bootstrap lower bound `55.6%`, bootstrap upper bound `83.3%`, permutation p-value `0.024`.
 - Promotion eligible: `False`. Reason: `current_all_features_reference`
 

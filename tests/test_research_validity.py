@@ -34,6 +34,7 @@ from diagnostic_outputs import (
     _btc_trend_masks,
     _material_worsening,
     active_signal_floor,
+    asset_deployability_report,
     asset_feature_set_and_policy_diagnostics,
     btc_no_edge_drilldown,
     candidate_feature_sets,
@@ -408,6 +409,7 @@ def test_diagnostic_schemas_include_required_outputs():
         "sol_selection_audit.csv",
         "sol_signal_policy_deployment.csv",
         "btc_no_edge_drilldown.csv",
+        "asset_deployability_report.csv",
     ]:
         assert filename in DIAGNOSTIC_OUTPUT_SCHEMAS
     assert "latest_signal_interpretation.csv" in OUTPUT_SCHEMAS
@@ -428,6 +430,7 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "audit_conclusion" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_selection_audit.csv"]
     assert "can_change_selected_model" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_signal_policy_deployment.csv"]
     assert "rejection_category" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_no_edge_drilldown.csv"]
+    assert "equity_chart_role" in DIAGNOSTIC_OUTPUT_SCHEMAS["asset_deployability_report.csv"]
 
 
 def test_btc_up_down_slice_creation_uses_known_btc_history():
@@ -914,6 +917,59 @@ def test_no_valid_edge_keeps_neutral_no_edge_interpretation():
     assert row["strategy_action"] == "cash"
     assert row["risk_label"] == "Neutral / no edge"
     assert bool(row["signal_policy_promoted"]) is False
+
+
+def test_asset_deployability_no_valid_edge_uses_benchmark_context():
+    latest = pd.DataFrame(
+        [
+            {
+                "run_id": "btc_research_test",
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "as_of_date": "2026-01-01",
+                "horizon": 30,
+                "selected_model": "no_valid_edge",
+                "selection_reason": "No 30d official model beat baselines.",
+                "signal": "neutral",
+                "reliability_label": "Low confidence",
+                "is_primary_objective": True,
+            }
+        ]
+    )
+    interp = latest_signal_interpretation_frame(
+        "btc_research_test",
+        "2026-01-01T00:00:00+00:00",
+        latest.assign(predicted_probability_up=0.5, expected_return=0.0),
+        empty_diagnostic_frame("signal_policy_report.csv"),
+        empty_diagnostic_frame("asset_feature_set_leaderboard.csv"),
+    )
+    leaderboard = pd.DataFrame(
+        [
+            {
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "model": "momentum_90d",
+                "directional_accuracy": 0.56,
+                "tc_adjusted_return": 0.2,
+                "brier_score": 0.24,
+                "max_drawdown": -0.2,
+            },
+            {
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "model": "logistic_linear",
+                "directional_accuracy": 0.52,
+                "tc_adjusted_return": 0.1,
+                "brier_score": 0.25,
+                "max_drawdown": -0.3,
+            },
+        ]
+    )
+    out = asset_deployability_report("btc_research_test", latest, interp, leaderboard, {"asset_name": "Bitcoin"})
+    validate_frame("asset_deployability_report.csv", out)
+    row = out.iloc[0]
+    assert row["deployability_decision"] == "no_valid_edge"
+    assert row["equity_chart_role"] == "Benchmark context only"
+    assert row["equity_chart_model"] == "momentum_90d"
 
 
 def test_signal_policy_cannot_change_selected_model_and_risk_off_is_not_short():

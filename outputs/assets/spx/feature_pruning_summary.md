@@ -2,7 +2,7 @@
 
 ## Run Summary
 - Asset: `S&P 500 / SPX`
-- Run ID: `spx_research_20260507T094719Z`
+- Run ID: `spx_research_20260507T130913Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -18,8 +18,8 @@
 - No pruned feature set passed the strict promotion rules. The official conclusion is unchanged.
 
 ## Promising But Rejected Candidates
-- `all_features_official` / `random_forest`: label `promising_but_rejected`, accuracy `64.6%`, net return `211.5%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
 - `all_features_official` / `logistic_linear`: label `promising_but_rejected`, accuracy `64.6%`, net return `198.2%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
+- `all_features_official` / `random_forest`: label `promising_but_rejected`, accuracy `62.6%`, net return `158.8%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
 - `all_features_official` / `hgb`: label `promising_but_rejected`, accuracy `59.6%`, net return `143.3%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
 
 ## Signal Quality

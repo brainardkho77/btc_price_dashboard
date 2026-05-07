@@ -90,6 +90,7 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "fred_macro_impact_report": read_diagnostic("fred_macro_impact_report.csv"),
         "macro_candidate_impact_report": read_diagnostic("macro_candidate_impact_report.csv"),
         "fred_vs_fallback_summary": read_diagnostic("fred_vs_fallback_summary.csv"),
+        "asset_deployability_report": read_diagnostic("asset_deployability_report.csv"),
         "sol_selection_audit": read_diagnostic("sol_selection_audit.csv"),
         "sol_signal_policy_deployment": read_diagnostic("sol_signal_policy_deployment.csv"),
         "btc_no_edge_drilldown": read_diagnostic("btc_no_edge_drilldown.csv"),
@@ -120,7 +121,14 @@ def output_dir_for_asset(asset_id: str) -> Path:
     return asset_dir
 
 
-def equity_chart(equity: pd.DataFrame, horizon: int, window_type: str, model: str, asset_name: str) -> go.Figure:
+def equity_chart(
+    equity: pd.DataFrame,
+    horizon: int,
+    window_type: str,
+    model: str,
+    asset_name: str,
+    chart_role: str = "Selected model strategy",
+) -> go.Figure:
     frame = equity[
         (equity["horizon"] == horizon)
         & (equity["window_type"] == window_type)
@@ -128,7 +136,8 @@ def equity_chart(equity: pd.DataFrame, horizon: int, window_type: str, model: st
     ].sort_values("date")
     fig = go.Figure()
     if not frame.empty:
-        fig.add_trace(go.Scatter(x=frame["date"], y=frame["equity_tc_adjusted"], name="Model after costs", mode="lines"))
+        strategy_name = "Model after costs" if chart_role == "Selected model strategy" else "Benchmark context"
+        fig.add_trace(go.Scatter(x=frame["date"], y=frame["equity_tc_adjusted"], name=strategy_name, mode="lines"))
         fig.add_trace(go.Scatter(x=frame["date"], y=frame["equity_buy_hold"], name=f"{asset_name} buy and hold", mode="lines"))
     fig.update_layout(
         height=360,
@@ -138,6 +147,56 @@ def equity_chart(equity: pd.DataFrame, horizon: int, window_type: str, model: st
         legend=dict(orientation="h", y=1.05),
     )
     return fig
+
+
+def grouped_research_notes(manifest_warnings: list[str], availability: pd.DataFrame) -> dict[str, list[str]]:
+    groups = {
+        "Research Limitations": [],
+        "Diagnostic-Only Data": [],
+        "Data Coverage Notes": [],
+        "Missing Optional Factors": [],
+    }
+    for warning in manifest_warnings or []:
+        text = str(warning)
+        lowered = text.lower()
+        if "revised historical" in lowered or "point-in-time" in lowered:
+            groups["Research Limitations"].append(text)
+        elif "diagnostic" in lowered or "excluded from official model selection" in lowered or "polymarket" in lowered:
+            groups["Diagnostic-Only Data"].append(text)
+        elif "recovered" in lowered or "fallback" in lowered or "was used" in lowered or "adjusted close" in lowered:
+            groups["Data Coverage Notes"].append(text)
+        elif "did not provide" in lowered or "remains skipped" in lowered or "unavailable" in lowered:
+            groups["Missing Optional Factors"].append(text)
+        else:
+            groups["Research Limitations"].append(text)
+
+    optional_sources = (
+        "Binance",
+        "CoinGecko",
+        "Coin Metrics",
+        "Polymarket",
+        "Alternative.me",
+        "DefiLlama",
+        "Coinbase",
+    )
+    if not availability.empty:
+        optional = availability[
+            availability["status"].astype(str).isin(["failed", "skipped", "unavailable"])
+            & availability["source"].astype(str).str.contains("|".join(optional_sources), case=False, na=False)
+            & ~availability["is_used_in_model"].astype(str).str.lower().isin(["true", "1"])
+        ].copy()
+        for _, row in optional.head(12).iterrows():
+            dataset = row.get("dataset", "")
+            source = row.get("source", "")
+            status = row.get("status", "")
+            reason = row.get("failure_reason", "")
+            note = f"{source} / {dataset}: {status}"
+            if pd.notna(reason) and str(reason).strip():
+                note += f" - {str(reason).strip()[:180]}"
+            if note not in groups["Missing Optional Factors"]:
+                groups["Missing Optional Factors"].append(note)
+
+    return {key: list(dict.fromkeys(values)) for key, values in groups.items() if values}
 
 
 def calibration_chart(calibration: pd.DataFrame, horizon: int, window_type: str, model: str) -> go.Figure:
@@ -215,6 +274,7 @@ asset_feature_set_leaderboard = outputs["asset_feature_set_leaderboard"]
 fred_macro_impact = outputs["fred_macro_impact_report"]
 macro_candidate_impact = outputs["macro_candidate_impact_report"]
 fred_vs_fallback = outputs["fred_vs_fallback_summary"]
+asset_deployability = outputs["asset_deployability_report"]
 sol_selection_audit = outputs["sol_selection_audit"]
 sol_signal_policy_deployment = outputs["sol_signal_policy_deployment"]
 btc_no_edge_drilldown_frame = outputs["btc_no_edge_drilldown"]
@@ -225,6 +285,8 @@ primary = latest.loc[latest["is_primary_objective"] == True].head(1)
 primary_row = primary.iloc[0] if not primary.empty else latest.iloc[0]
 signal_interp_primary = latest_signal_interpretation.head(1)
 signal_interp_row = signal_interp_primary.iloc[0] if not signal_interp_primary.empty else pd.Series(dtype=object)
+deployability_primary = asset_deployability.head(1)
+deployability_row = deployability_primary.iloc[0] if not deployability_primary.empty else pd.Series(dtype=object)
 
 st.title(f"{asset_name} Research Validity Report")
 st.markdown(
@@ -253,10 +315,29 @@ policy_cols[2].metric("Signal policy promoted", str(bool(signal_interp_row.get("
 policy_cols[3].metric("Feature set promoted", str(bool(signal_interp_row.get("asset_feature_set_promoted", False))))
 st.caption("Risk-off means avoid long exposure; it is not a short signal.")
 
-if manifest.get("warnings"):
-    with st.expander("Research Warnings", expanded=True):
-        for warning in manifest["warnings"]:
-            st.warning(warning)
+deploy_cols = st.columns(4)
+deploy_cols[0].metric("Deployability", str(deployability_row.get("deployability_decision", "n/a")))
+deploy_cols[1].metric("Chart meaning", str(deployability_row.get("equity_chart_role", "n/a")))
+deploy_cols[2].metric("Best baseline", str(deployability_row.get("best_baseline_model", "n/a")))
+best_ml_label = str(deployability_row.get("best_ml_model", "n/a"))
+best_ml_acc = deployability_row.get("best_ml_accuracy", pd.NA)
+deploy_cols[3].metric("Best ML", best_ml_label, "n/a" if pd.isna(best_ml_acc) else fmt_pct(best_ml_acc))
+if str(deployability_row.get("caution_reason", "")).strip():
+    st.caption(str(deployability_row.get("caution_reason")))
+
+research_note_groups = grouped_research_notes(manifest.get("warnings", []), availability)
+if research_note_groups:
+    with st.expander("Research Notes", expanded=True):
+        st.caption("These notes do not mean the app failed. They describe which data was used, skipped, or kept diagnostic-only.")
+        for heading, notes in research_note_groups.items():
+            st.markdown(f"**{heading}**")
+            for note in notes:
+                if heading == "Research Limitations":
+                    st.warning(note)
+                elif heading == "Missing Optional Factors":
+                    st.info(note)
+                else:
+                    st.caption(f"- {note}")
 
 if outputs.get("diagnostic_warnings"):
     with st.expander("Diagnostic Output Warnings", expanded=False):
@@ -324,11 +405,17 @@ with quality_tab:
         hide_index=True,
     )
 
-    chart_model = str(primary_row["selected_model"])
+    chart_model = str(deployability_row.get("equity_chart_model", "")) or str(primary_row["selected_model"])
+    chart_role = str(deployability_row.get("equity_chart_role", "Selected model strategy"))
     if chart_model == "no_valid_edge" or chart_model not in set(equity["model"]):
         chart_model = str(table.iloc[0]["model"]) if not table.empty else ""
+        chart_role = "Benchmark context only"
     if chart_model:
-        st.plotly_chart(equity_chart(equity, selected_horizon, selected_window, chart_model, asset_name), use_container_width=True)
+        st.caption(f"Chart meaning: {chart_role}.")
+        st.plotly_chart(
+            equity_chart(equity, selected_horizon, selected_window, chart_model, asset_name, chart_role),
+            use_container_width=True,
+        )
 
 with signal_tab:
     st.subheader("Signal Strength")
@@ -741,7 +828,7 @@ with signal_tab:
 with no_edge_tab:
     st.subheader("No Valid Edge Diagnostics")
     st.subheader("Why No Signal?")
-    st.write(str(signal_interp_row.get("reason", primary_row["selection_reason"])))
+    st.write(str(deployability_row.get("why_no_signal", signal_interp_row.get("reason", primary_row["selection_reason"]))))
     st.caption("Neutral or risk-off means cash / avoid long exposure. It is not a short signal.")
     official_30 = leaderboard[(leaderboard["horizon"] == 30) & (leaderboard["window_type"] == "official_monthly")].copy()
     baseline_models = ["buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"]

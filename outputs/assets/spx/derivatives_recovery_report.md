@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `spx_research_20260507T094719Z`
+- Run ID: `spx_research_20260507T130913Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`

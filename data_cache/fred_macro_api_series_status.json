@@ -84,9 +84,9 @@
     "series_id": "EFFR",
     "series_name": "effective_fed_funds_rate",
     "status": "worked",
-    "rows": 3099,
+    "rows": 3100,
     "first_date": "2014-01-02",
-    "last_date": "2026-05-05",
+    "last_date": "2026-05-06",
     "failure_reason": ""
   },
   {

@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `spx_research_20260507T094719Z`
+- Full refresh run ID: `spx_research_20260507T130913Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -18,7 +18,7 @@ Quick mode used `2018-01-02` to `2026-05-06` with `75` 30d official samples and 
 Validation gates failed by ML model:
 - `logistic_linear`: did_not_beat_buy_hold; failed_transaction_cost_check; low_reliability
 - `hgb`: did_not_beat_buy_hold; failed_transaction_cost_check; low_reliability
-- `random_forest`: did_not_beat_buy_hold; low_reliability
+- `random_forest`: did_not_beat_buy_hold; failed_transaction_cost_check; low_reliability
 
 ## Feature Group Findings
 - `dollar_rates_only` / `logistic_linear`: samples `99`, accuracy `68.7%`, net return `212.0%`, reliability `Medium confidence`
@@ -26,11 +26,11 @@ Validation gates failed by ML model:
 - `all_features` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 - `prediction_markets_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 - `derivatives_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
-- `price_momentum_only` / `random_forest`: samples `99`, accuracy `67.7%`, net return `184.2%`, reliability `Low confidence`
 - `macro_liquidity_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 - `onchain_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 - `sol_ecosystem_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 - `stablecoins_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
+- `risk_assets_only` / `logistic_linear`: samples `99`, accuracy `67.7%`, net return `216.9%`, reliability `Low confidence`
 
 ## Feature Group Watchlist
 - `dollar_rates_only` / `logistic_linear`: samples `99`, accuracy `68.7%`, Sharpe `1.01`, max drawdown `-18.2%`, Brier `0.215`, calibration error `0.097`, beats buy-hold `True`, beats momentum `True`.
@@ -38,14 +38,14 @@ Validation gates failed by ML model:
 
 ## Regime Findings
 - `logistic_linear` in `bear_market`: samples `23`, accuracy `73.9%`, net return `70.7%`, reliability `Low confidence`
-- `random_permutation` in `pre_halving`: samples `24`, accuracy `70.8%`, net return `60.3%`, reliability `Low confidence`
 - `buy_hold_direction` in `pre_halving`: samples `24`, accuracy `70.8%`, net return `48.0%`, reliability `Low confidence`
 - `momentum_30d` in `pre_halving`: samples `24`, accuracy `70.8%`, net return `44.6%`, reliability `Low confidence`
 - `momentum_90d` in `post_halving`: samples `24`, accuracy `70.8%`, net return `65.4%`, reliability `Low confidence`
+- `random_permutation` in `pre_halving`: samples `24`, accuracy `70.8%`, net return `60.3%`, reliability `Low confidence`
 - `buy_hold_direction` in `high_volatility`: samples `58`, accuracy `70.7%`, net return `128.5%`, reliability `Low confidence`
 - `buy_hold_direction` in `low_rate`: samples `34`, accuracy `70.6%`, net return `81.5%`, reliability `Low confidence`
+- `random_forest` in `post_etf`: samples `27`, accuracy `70.4%`, net return `50.8%`, reliability `Low confidence`
 - `hgb` in `post_etf`: samples `27`, accuracy `70.4%`, net return `50.8%`, reliability `Low confidence`
-- `logistic_linear` in `post_etf`: samples `27`, accuracy `70.4%`, net return `50.8%`, reliability `Low confidence`
 - `buy_hold_direction` in `post_etf`: samples `27`, accuracy `70.4%`, net return `50.8%`, reliability `Low confidence`
 
 ## Binance Derivatives

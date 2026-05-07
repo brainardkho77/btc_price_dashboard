@@ -3432,6 +3432,107 @@ def latest_signal_interpretation_frame(
     )
 
 
+def _best_model_rows(leaderboard: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
+    if leaderboard.empty:
+        return pd.Series(dtype=object), pd.Series(dtype=object)
+    official_30 = leaderboard[
+        (leaderboard["horizon"] == 30)
+        & (leaderboard["window_type"] == "official_monthly")
+    ].copy()
+    if official_30.empty:
+        return pd.Series(dtype=object), pd.Series(dtype=object)
+    baselines = {"buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"}
+    baseline = official_30[official_30["model"].astype(str).isin(baselines)]
+    ml = official_30[~official_30["model"].astype(str).isin(baselines)]
+    sort_cols = ["directional_accuracy", "tc_adjusted_return", "brier_score", "max_drawdown"]
+    ascending = [False, False, True, False]
+    best_baseline = (
+        baseline.sort_values(sort_cols, ascending=ascending, na_position="last").iloc[0]
+        if not baseline.empty
+        else pd.Series(dtype=object)
+    )
+    best_ml = (
+        ml.sort_values(sort_cols, ascending=ascending, na_position="last").iloc[0]
+        if not ml.empty
+        else pd.Series(dtype=object)
+    )
+    return best_ml, best_baseline
+
+
+def asset_deployability_report(
+    run_id: str,
+    latest: pd.DataFrame,
+    latest_interpretation: pd.DataFrame,
+    leaderboard: pd.DataFrame,
+    manifest: dict,
+) -> pd.DataFrame:
+    if latest.empty:
+        return empty_diagnostic_frame("asset_deployability_report.csv")
+    asset_id = _asset_id_from_run(run_id)
+    primary = latest[latest["is_primary_objective"] == True].head(1)
+    latest_row = primary.iloc[0] if not primary.empty else latest.iloc[0]
+    interp_row = latest_interpretation.iloc[0] if not latest_interpretation.empty else pd.Series(dtype=object)
+    best_ml, best_baseline = _best_model_rows(leaderboard)
+
+    selected_model = str(latest_row.get("selected_model", "no_valid_edge"))
+    selected_signal = str(latest_row.get("signal", "neutral"))
+    reliability = str(latest_row.get("reliability_label", "Low confidence"))
+    strategy_action = str(interp_row.get("strategy_action", "cash"))
+    risk_label = str(interp_row.get("risk_label", "Neutral / no edge"))
+
+    best_baseline_model = str(best_baseline.get("model", "")) if not best_baseline.empty else ""
+    best_ml_model = str(best_ml.get("model", "")) if not best_ml.empty else ""
+    selected_is_active = selected_model != "no_valid_edge"
+    if selected_is_active:
+        equity_chart_role = "Selected model strategy"
+        equity_chart_model = selected_model
+        selected_model_status = "active_selected_model"
+        if reliability == "High confidence" and strategy_action == "long":
+            deployability = "deployable"
+            caution = "Validated model has high confidence and current signal clears the long policy."
+        else:
+            deployability = "diagnostic_only"
+            caution = "Selected model exists, but current reliability or signal policy does not support a deployable long action."
+    else:
+        equity_chart_role = "Benchmark context only"
+        equity_chart_model = best_baseline_model or best_ml_model
+        selected_model_status = "no_valid_edge"
+        deployability = "no_valid_edge"
+        caution = str(latest_row.get("selection_reason", "No validated 30d edge."))
+
+    why_no_signal = str(interp_row.get("reason", "")) or str(latest_row.get("selection_reason", ""))
+    if selected_is_active and selected_signal != "neutral" and strategy_action == "long":
+        why_no_signal = "Current model and signal policy support a long action."
+
+    return pd.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "asset_name": str(manifest.get("asset_name") or asset_id.upper()),
+                "as_of_date": latest_row.get("as_of_date", ""),
+                "selected_model": selected_model,
+                "selected_signal": selected_signal,
+                "strategy_action": strategy_action,
+                "risk_label": risk_label,
+                "reliability_label": reliability,
+                "best_ml_model": best_ml_model,
+                "best_ml_accuracy": best_ml.get("directional_accuracy", np.nan),
+                "best_ml_tc_adjusted_return": best_ml.get("tc_adjusted_return", np.nan),
+                "best_baseline_model": best_baseline_model,
+                "best_baseline_accuracy": best_baseline.get("directional_accuracy", np.nan),
+                "best_baseline_tc_adjusted_return": best_baseline.get("tc_adjusted_return", np.nan),
+                "selected_model_status": selected_model_status,
+                "equity_chart_role": equity_chart_role,
+                "equity_chart_model": equity_chart_model,
+                "deployability_decision": deployability,
+                "caution_reason": caution,
+                "why_no_signal": why_no_signal,
+            }
+        ]
+    )
+
+
 def sol_stability_report(
     run_id: str,
     raw: pd.DataFrame,
@@ -4120,6 +4221,15 @@ def write_diagnostics(
         asset_policy["asset_feature_set_leaderboard.csv"],
     )
     write_schema_csv("latest_signal_interpretation.csv", latest_interpretation, output_dir)
+    manifest_path = output_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    deployability_frame = asset_deployability_report(
+        run_id,
+        latest,
+        latest_interpretation,
+        base_outputs["model_leaderboard.csv"],
+        manifest,
+    )
     feature_signal_frame = feature_signal_diagnostics(run_id, raw, feature_result, config)
     factor_quality_frame = pruning["factor_quality_scorecard.csv"]
     macro_candidate_frame = macro_candidate_impact_report(run_id, asset_policy["asset_feature_set_leaderboard.csv"])
@@ -4162,6 +4272,7 @@ def write_diagnostics(
         "fred_macro_impact_report.csv": fred_impact_frame,
         "macro_candidate_impact_report.csv": macro_candidate_frame,
         "fred_vs_fallback_summary.csv": fred_summary_frame,
+        "asset_deployability_report.csv": deployability_frame,
         "sol_selection_audit.csv": sol_selection_audit(run_id, asset_policy["asset_feature_set_leaderboard.csv"]),
         "sol_signal_policy_deployment.csv": sol_signal_policy_deployment_check(
             run_id,

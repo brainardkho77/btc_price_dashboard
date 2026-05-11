@@ -1,7 +1,7 @@
 # SOL Edge Validation + BTC No-Edge Drilldown
 
 ## Run Summary
-- Run ID: `spx_research_20260507T190435Z`
+- Run ID: `spx_research_20260511T075454Z`
 - Asset: `S&P 500 / SPX`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`

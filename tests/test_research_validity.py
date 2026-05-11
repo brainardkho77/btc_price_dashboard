@@ -38,6 +38,9 @@ from diagnostic_outputs import (
     active_signal_floor,
     asset_deployability_report,
     asset_feature_set_and_policy_diagnostics,
+    btc_baseline_dominance_report,
+    btc_edge_failure_audit,
+    btc_factor_rescue_report,
     btc_no_edge_drilldown,
     candidate_feature_sets,
     derivatives_coverage,
@@ -415,6 +418,9 @@ def test_diagnostic_schemas_include_required_outputs():
         "sol_signal_policy_deployment.csv",
         "sol_deployability_audit.csv",
         "btc_no_edge_drilldown.csv",
+        "btc_edge_failure_audit.csv",
+        "btc_factor_rescue_report.csv",
+        "btc_baseline_dominance_report.csv",
         "asset_deployability_report.csv",
         "sol_deployability_audit.csv",
         "spx_risk_off_audit.csv",
@@ -438,6 +444,9 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "audit_conclusion" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_selection_audit.csv"]
     assert "can_change_selected_model" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_signal_policy_deployment.csv"]
     assert "rejection_category" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_no_edge_drilldown.csv"]
+    assert "distance_to_deployable" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_edge_failure_audit.csv"]
+    assert "rescue_status" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_factor_rescue_report.csv"]
+    assert "dominance_result" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_baseline_dominance_report.csv"]
     assert "equity_chart_role" in DIAGNOSTIC_OUTPUT_SCHEMAS["asset_deployability_report.csv"]
     assert "unavailable_gates" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_deployability_audit.csv"]
     assert "threshold_selected_on" in DIAGNOSTIC_OUTPUT_SCHEMAS["spx_risk_off_audit.csv"]
@@ -1104,6 +1113,134 @@ def test_btc_no_edge_drilldown_classifies_target_candidates():
     categories = dict(zip(report["candidate_feature_set"], report["rejection_category"]))
     assert categories["price_plus_stablecoins"] == "high_return_but_poor_calibration_or_drawdown"
     assert categories["btc_dollar_rates_cycle"] == "promising_but_statistically_unstable"
+
+
+def _btc_test_leaderboard():
+    return pd.DataFrame(
+        [
+            {"horizon": 30, "window_type": "official_monthly", "model": "buy_hold_direction", "directional_accuracy": 0.51, "tc_adjusted_return": 8.4},
+            {"horizon": 30, "window_type": "official_monthly", "model": "momentum_30d", "directional_accuracy": 0.52, "tc_adjusted_return": 5.0},
+            {"horizon": 30, "window_type": "official_monthly", "model": "momentum_90d", "directional_accuracy": 0.55, "tc_adjusted_return": 8.4},
+            {"horizon": 30, "window_type": "official_monthly", "model": "random_permutation", "directional_accuracy": 0.45, "tc_adjusted_return": 0.7},
+        ]
+    )
+
+
+def test_btc_edge_failure_and_rescue_reports_quantify_distance_to_deployable():
+    rows = pd.DataFrame(
+        [
+            {
+                "run_id": "btc_research_test",
+                "asset_id": "btc",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "btc_dollar_rates_cycle",
+                "model_name": "logistic_linear",
+                "feature_selection_method": "nested_train_only_pruned",
+                "n_features": 12,
+                "n_samples": 100,
+                "directional_accuracy": 0.57,
+                "balanced_accuracy": 0.57,
+                "brier_score": 0.24,
+                "calibration_error": 0.10,
+                "sharpe": 0.7,
+                "max_drawdown": -0.45,
+                "net_return": 10.0,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": True,
+                "beats_random_baseline": True,
+                "beats_current_reference": True,
+                "material_worsening": False,
+                "regime_stability_pass": True,
+                "bootstrap_ci_low": 0.47,
+                "bootstrap_ci_high": 0.65,
+                "permutation_p_value": 0.09,
+                "promotion_eligible": False,
+                "reliability_label": "Medium confidence",
+                "window_fingerprint": "abc",
+                "rejection_reason": "failed_bootstrap_or_permutation_stability_check",
+            },
+            {
+                "run_id": "btc_research_test",
+                "asset_id": "btc",
+                "horizon": 30,
+                "window_type": "official_monthly",
+                "candidate_feature_set": "price_plus_dollar_rates",
+                "model_name": "logistic_linear",
+                "feature_selection_method": "nested_train_only_pruned",
+                "n_features": 9,
+                "n_samples": 100,
+                "directional_accuracy": 0.53,
+                "balanced_accuracy": 0.53,
+                "brier_score": 0.25,
+                "calibration_error": 0.12,
+                "sharpe": 0.5,
+                "max_drawdown": -0.55,
+                "net_return": 7.0,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": False,
+                "beats_random_baseline": True,
+                "beats_current_reference": True,
+                "material_worsening": False,
+                "regime_stability_pass": True,
+                "bootstrap_ci_low": 0.44,
+                "bootstrap_ci_high": 0.63,
+                "permutation_p_value": 0.25,
+                "promotion_eligible": False,
+                "reliability_label": "Low confidence",
+                "window_fingerprint": "abc",
+                "rejection_reason": "failed_official_model_selection_gates",
+            },
+        ]
+    )
+    audit = btc_edge_failure_audit("btc_research_test", rows, _btc_test_leaderboard())
+    validate_frame("btc_edge_failure_audit.csv", audit)
+    first = audit[audit["candidate_feature_set"] == "btc_dollar_rates_cycle"].iloc[0]
+    assert first["closest_failed_gate"] == "bootstrap_ci_low_above_50"
+    assert first["failure_category"] == "promising_but_unstable"
+    rescue = btc_factor_rescue_report("btc_research_test", rows, _btc_test_leaderboard())
+    validate_frame("btc_factor_rescue_report.csv", rescue)
+    assert "btc_dollar_rates_cycle" in set(rescue["candidate_feature_set"])
+    assert rescue.iloc[0]["rescue_status"] in {"rescue_candidate_watchlist", "low_priority", "promotion_eligible"}
+
+
+def test_btc_baseline_dominance_report_uses_official_equity_rows():
+    dates = pd.date_range("2021-01-31", periods=6, freq="ME")
+    rows = []
+    for model, signals, returns in [
+        ("momentum_90d", ["long", "long", "cash", "long", "cash", "long"], [0.03, -0.02, 0.0, 0.04, 0.0, -0.01]),
+        ("logistic_linear", ["long", "cash", "cash", "long", "long", "cash"], [0.03, 0.0, 0.0, 0.04, -0.03, 0.0]),
+    ]:
+        for date, signal, ret, asset_ret in zip(dates, signals, returns, [0.03, -0.02, -0.01, 0.04, -0.03, -0.01]):
+            rows.append(
+                {
+                    "run_id": "btc_research_test",
+                    "date": date,
+                    "horizon": 30,
+                    "window_type": "official_monthly",
+                    "model": model,
+                    "signal": signal,
+                    "position": 1.0 if signal == "long" else 0.0,
+                    "asset_return": asset_ret,
+                    "btc_return": asset_ret,
+                    "gross_strategy_return": ret,
+                    "tc_adjusted_strategy_return": ret,
+                    "equity_gross": 1.0,
+                    "equity_tc_adjusted": 1.0,
+                    "equity_buy_hold": 1.0,
+                    "trade_flag": 0,
+                    "turnover": 0.0,
+                }
+            )
+    equity = pd.DataFrame(rows)
+    raw = pd.DataFrame({"asset_close": np.linspace(100, 120, 240), "us_10y_yield": np.linspace(4, 5, 240)}, index=pd.date_range("2020-01-01", periods=240))
+    report = btc_baseline_dominance_report("btc_research_test", raw, equity)
+    validate_frame("btc_baseline_dominance_report.csv", report)
+    full = report[report["period_slice"] == "full_period"].iloc[0]
+    assert full["baseline_model"] == "momentum_90d"
+    assert full["n_samples"] == 6
 
 
 def test_sol_stability_report_candidate_pairs_include_selected_model():

@@ -1,14 +1,14 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `btc_research_20260507T183236Z`
+- Full refresh run ID: `btc_research_20260511T072420Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
 - no_valid_edge triggered correctly: `True`
 
 ## Why Quick Mode Looked Better
-Quick mode used `2018-01-01` to `2026-05-05` with `75` 30d official samples and selected `random_forest`. Full refresh used `2015-01-01` to `2026-05-07` with `100` 30d official samples and selected `no_valid_edge`. The quick edge disappeared because the broader 2015+ sample added regimes where the ML models did not beat the 90d momentum baseline or the full baseline set after costs.
+Quick baseline was unavailable, so quick-vs-full comparisons are limited.
 
 ## 30d Official Model Comparison
 - Best ML model: `logistic_linear` with directional accuracy `50.0%`

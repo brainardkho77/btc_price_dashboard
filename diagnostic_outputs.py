@@ -2913,6 +2913,15 @@ BTC_NO_EDGE_DRILLDOWN_PAIRS = [
     ("price_plus_dollar_rates", "logistic_linear"),
 ]
 
+BTC_FACTOR_RESCUE_CANDIDATES = [
+    "btc_dollar_rates_cycle",
+    "price_plus_stablecoins",
+    "btc_derivatives_v2_pack",
+    "btc_dollar_rates_cycle_plus_derivatives_v2",
+    "btc_macro_liquidity_v2",
+    "btc_no_sparse_derivatives",
+]
+
 SPX_RISK_OFF_AUDIT_PAIRS = [
     ("all_features", "logistic_linear"),
     ("all_features", "random_forest"),
@@ -3255,6 +3264,291 @@ def btc_no_edge_drilldown(run_id: str, asset_feature_sets: pd.DataFrame) -> pd.D
                 "drilldown_note": note,
             }
         )
+    return pd.DataFrame(rows)
+
+
+def _btc_official_baseline_reference(leaderboard: pd.DataFrame) -> dict:
+    if leaderboard.empty:
+        return {}
+    official = leaderboard[(leaderboard["horizon"] == 30) & (leaderboard["window_type"] == "official_monthly")].copy()
+    baselines = official[official["model"].isin(["buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"])]
+    out = {}
+    for name in ["buy_hold_direction", "momentum_30d", "momentum_90d", "random_permutation"]:
+        row = baselines[baselines["model"] == name].head(1)
+        if not row.empty:
+            out[name] = row.iloc[0].to_dict()
+    if not baselines.empty:
+        out["best_baseline"] = baselines.sort_values(
+            ["directional_accuracy", "tc_adjusted_return"],
+            ascending=[False, False],
+            na_position="last",
+        ).iloc[0].to_dict()
+    return out
+
+
+def _btc_failed_gates(row: pd.Series, baseline_ref: dict) -> Tuple[List[str], List[str], str]:
+    failed: List[str] = []
+    gaps: List[Tuple[str, float, str]] = []
+
+    def add_gap(name: str, passed: bool, gap_value: float, label: str) -> None:
+        if passed:
+            return
+        failed.append(name)
+        if pd.notna(gap_value):
+            gaps.append((name, abs(float(gap_value)), label))
+
+    best_baseline = baseline_ref.get("best_baseline", {})
+    best_baseline_return = float(best_baseline.get("tc_adjusted_return", np.nan)) if best_baseline else np.nan
+    acc = row.get("directional_accuracy", np.nan)
+    add_gap("beats_buy_hold", _bool_value(row.get("beats_buy_hold", False)), acc - baseline_ref.get("buy_hold_direction", {}).get("directional_accuracy", np.nan), "accuracy")
+    add_gap("beats_momentum_30d", _bool_value(row.get("beats_momentum_30d", False)), acc - baseline_ref.get("momentum_30d", {}).get("directional_accuracy", np.nan), "accuracy")
+    add_gap("beats_momentum_90d", _bool_value(row.get("beats_momentum_90d", False)), acc - baseline_ref.get("momentum_90d", {}).get("directional_accuracy", np.nan), "accuracy")
+    add_gap("beats_random_baseline", _bool_value(row.get("beats_random_baseline", False)), acc - baseline_ref.get("random_permutation", {}).get("directional_accuracy", np.nan), "accuracy")
+    add_gap(
+        "beats_after_cost_best_baseline",
+        pd.notna(row.get("net_return", np.nan)) and pd.notna(best_baseline_return) and float(row.get("net_return")) > best_baseline_return,
+        row.get("net_return", np.nan) - best_baseline_return if pd.notna(best_baseline_return) else np.nan,
+        "return",
+    )
+    add_gap("bootstrap_ci_low_above_50", pd.notna(row.get("bootstrap_ci_low", np.nan)) and float(row.get("bootstrap_ci_low")) > 0.50, row.get("bootstrap_ci_low", np.nan) - 0.50, "ci")
+    add_gap("permutation_p_value_lte_0_10", pd.notna(row.get("permutation_p_value", np.nan)) and float(row.get("permutation_p_value")) <= 0.10, 0.10 - row.get("permutation_p_value", np.nan), "p_value")
+    add_gap("regime_stability_pass", _bool_value(row.get("regime_stability_pass", False)), np.nan, "stability")
+    add_gap("not_materially_worse", not _bool_value(row.get("material_worsening", False)), np.nan, "quality")
+    closest = sorted(gaps, key=lambda item: item[1])[0][0] if gaps else (failed[0] if failed else "none")
+    distance = "; ".join(failed) if failed else "promotion_eligible"
+    return failed, gaps, closest
+
+
+def _btc_failure_category(row: pd.Series, failed_gates: Sequence[str]) -> str:
+    if not failed_gates:
+        return "promotion_eligible"
+    if "beats_momentum_90d" in failed_gates:
+        return "dominated_by_momentum_baseline"
+    if "not_materially_worse" in failed_gates:
+        return "high_return_but_poor_calibration_or_drawdown"
+    if "bootstrap_ci_low_above_50" in failed_gates or "permutation_p_value_lte_0_10" in failed_gates or "regime_stability_pass" in failed_gates:
+        if pd.notna(row.get("directional_accuracy", np.nan)) and float(row.get("directional_accuracy")) >= 0.55:
+            return "promising_but_unstable"
+        return "statistically_weak"
+    if "beats_after_cost_best_baseline" in failed_gates:
+        return "good_accuracy_but_fails_after_costs"
+    return "genuinely_noisy"
+
+
+def _btc_recommended_next_action(row: pd.Series, category: str, closest_failed_gate: str) -> str:
+    if category == "promotion_eligible":
+        return "Candidate passes diagnostic promotion gates; review official selected-model logic before promotion."
+    if category == "dominated_by_momentum_baseline":
+        return "Study periods where 90d momentum wins and test whether the candidate adds value only in volatility or liquidity regimes."
+    if category == "promising_but_unstable":
+        return "Focus on regime stability and confidence intervals before adding model complexity."
+    if category == "high_return_but_poor_calibration_or_drawdown":
+        return "Improve calibration/drawdown controls; do not promote based on return alone."
+    if closest_failed_gate == "bootstrap_ci_low_above_50":
+        return "Needs stronger sample-stable hit rate; inspect whether accuracy is concentrated in a few months."
+    if closest_failed_gate == "permutation_p_value_lte_0_10":
+        return "Needs stronger evidence versus randomized timing; avoid threshold tuning changes until p-value improves."
+    return "Treat as low-priority unless new data materially changes feature quality."
+
+
+def btc_edge_failure_audit(run_id: str, asset_feature_sets: pd.DataFrame, leaderboard: pd.DataFrame) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "btc":
+        return empty_diagnostic_frame("btc_edge_failure_audit.csv")
+    baseline_ref = _btc_official_baseline_reference(leaderboard)
+    if asset_feature_sets.empty:
+        return empty_diagnostic_frame("btc_edge_failure_audit.csv")
+    frame = asset_feature_sets[
+        (asset_feature_sets["horizon"] == 30)
+        & (asset_feature_sets["window_type"] == "official_monthly")
+    ].copy()
+    rows = []
+    best_baseline = baseline_ref.get("best_baseline", {})
+    best_baseline_return = best_baseline.get("tc_adjusted_return", np.nan)
+    for _, row in frame.iterrows():
+        failed, _, closest = _btc_failed_gates(row, baseline_ref)
+        category = _btc_failure_category(row, failed)
+        acc = row.get("directional_accuracy", np.nan)
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "candidate_feature_set": row.get("candidate_feature_set", ""),
+                "model_name": row.get("model_name", ""),
+                "n_samples": int(row.get("n_samples", 0) or 0),
+                "directional_accuracy": acc,
+                "accuracy_gap_to_buy_hold": acc - baseline_ref.get("buy_hold_direction", {}).get("directional_accuracy", np.nan) if pd.notna(acc) else np.nan,
+                "accuracy_gap_to_momentum_30d": acc - baseline_ref.get("momentum_30d", {}).get("directional_accuracy", np.nan) if pd.notna(acc) else np.nan,
+                "accuracy_gap_to_momentum_90d": acc - baseline_ref.get("momentum_90d", {}).get("directional_accuracy", np.nan) if pd.notna(acc) else np.nan,
+                "accuracy_gap_to_random": acc - baseline_ref.get("random_permutation", {}).get("directional_accuracy", np.nan) if pd.notna(acc) else np.nan,
+                "tc_adjusted_return": row.get("net_return", np.nan),
+                "return_gap_to_best_baseline": row.get("net_return", np.nan) - best_baseline_return if pd.notna(row.get("net_return", np.nan)) and pd.notna(best_baseline_return) else np.nan,
+                "brier_score": row.get("brier_score", np.nan),
+                "calibration_error": row.get("calibration_error", np.nan),
+                "max_drawdown": row.get("max_drawdown", np.nan),
+                "bootstrap_ci_low": row.get("bootstrap_ci_low", np.nan),
+                "bootstrap_ci_gap_to_50": row.get("bootstrap_ci_low", np.nan) - 0.50 if pd.notna(row.get("bootstrap_ci_low", np.nan)) else np.nan,
+                "permutation_p_value": row.get("permutation_p_value", np.nan),
+                "permutation_gap_to_0_10": row.get("permutation_p_value", np.nan) - 0.10 if pd.notna(row.get("permutation_p_value", np.nan)) else np.nan,
+                "beats_buy_hold": _bool_value(row.get("beats_buy_hold", False)),
+                "beats_momentum_30d": _bool_value(row.get("beats_momentum_30d", False)),
+                "beats_momentum_90d": _bool_value(row.get("beats_momentum_90d", False)),
+                "beats_random_baseline": _bool_value(row.get("beats_random_baseline", False)),
+                "beats_current_reference": _bool_value(row.get("beats_current_reference", False)),
+                "material_worsening": _bool_value(row.get("material_worsening", False)),
+                "regime_stability_pass": _bool_value(row.get("regime_stability_pass", False)),
+                "promotion_eligible": _bool_value(row.get("promotion_eligible", False)),
+                "gate_failure_count": int(len(failed)),
+                "closest_failed_gate": closest,
+                "distance_to_deployable": "; ".join(failed) if failed else "promotion_eligible",
+                "failure_category": category,
+                "failed_gates": "; ".join(failed),
+                "recommended_next_action": _btc_recommended_next_action(row, category, closest),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def btc_factor_rescue_report(run_id: str, asset_feature_sets: pd.DataFrame, leaderboard: pd.DataFrame) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "btc":
+        return empty_diagnostic_frame("btc_factor_rescue_report.csv")
+    audit = btc_edge_failure_audit(run_id, asset_feature_sets, leaderboard)
+    if audit.empty:
+        return empty_diagnostic_frame("btc_factor_rescue_report.csv")
+    feature_lookup = asset_feature_sets.set_index(["candidate_feature_set", "model_name"], drop=False) if not asset_feature_sets.empty else pd.DataFrame()
+    rows = []
+    for _, row in audit[audit["candidate_feature_set"].isin(BTC_FACTOR_RESCUE_CANDIDATES)].iterrows():
+        key = (row["candidate_feature_set"], row["model_name"])
+        original = feature_lookup.loc[key] if isinstance(feature_lookup, pd.DataFrame) and key in feature_lookup.index else pd.Series(dtype=object)
+        beats_all = bool(row["beats_buy_hold"] and row["beats_momentum_30d"] and row["beats_momentum_90d"] and row["beats_random_baseline"])
+        if row["promotion_eligible"]:
+            status = "promotion_eligible"
+        elif row["failure_category"] in {"promising_but_unstable", "high_return_but_poor_calibration_or_drawdown"}:
+            status = "rescue_candidate_watchlist"
+        else:
+            status = "low_priority"
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "candidate_feature_set": row["candidate_feature_set"],
+                "model_name": row["model_name"],
+                "n_features": int(original.get("n_features", 0) or 0),
+                "n_samples": int(row["n_samples"]),
+                "directional_accuracy": row["directional_accuracy"],
+                "tc_adjusted_return": row["tc_adjusted_return"],
+                "brier_score": row["brier_score"],
+                "calibration_error": row["calibration_error"],
+                "max_drawdown": row["max_drawdown"],
+                "bootstrap_ci_low": row["bootstrap_ci_low"],
+                "permutation_p_value": row["permutation_p_value"],
+                "beats_all_baselines": beats_all,
+                "beats_current_reference": row["beats_current_reference"],
+                "regime_stability_pass": row["regime_stability_pass"],
+                "promotion_eligible": row["promotion_eligible"],
+                "distance_to_deployable": row["distance_to_deployable"],
+                "closest_failed_gate": row["closest_failed_gate"],
+                "rescue_status": status,
+                "rejection_reason": original.get("rejection_reason", row["failed_gates"]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _slice_equity_periods(equity: pd.DataFrame, raw: pd.DataFrame) -> Dict[str, pd.Series]:
+    dates = pd.DatetimeIndex(equity["date"])
+    masks = {
+        "full_period": pd.Series(True, index=equity.index),
+        "2018-2020": pd.Series(((dates >= pd.Timestamp("2018-01-01")) & (dates <= pd.Timestamp("2020-12-31"))), index=equity.index),
+        "2021-2023": pd.Series(((dates >= pd.Timestamp("2021-01-01")) & (dates <= pd.Timestamp("2023-12-31"))), index=equity.index),
+        "2024-present": pd.Series((dates >= pd.Timestamp("2024-01-01")), index=equity.index),
+    }
+    try:
+        regime_masks = _period_slice_masks(raw, dates)
+        for name in ["high-vol", "low-vol"]:
+            if name in regime_masks:
+                masks[name] = pd.Series(regime_masks[name].to_numpy(), index=equity.index)
+    except Exception:
+        pass
+    return masks
+
+
+def btc_baseline_dominance_report(run_id: str, raw: pd.DataFrame, equity_curves: pd.DataFrame) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "btc":
+        return empty_diagnostic_frame("btc_baseline_dominance_report.csv")
+    if equity_curves.empty:
+        return empty_diagnostic_frame("btc_baseline_dominance_report.csv")
+    official = equity_curves[
+        (equity_curves["horizon"] == 30)
+        & (equity_curves["window_type"] == "official_monthly")
+    ].copy()
+    if official.empty:
+        return empty_diagnostic_frame("btc_baseline_dominance_report.csv")
+    official["date"] = pd.to_datetime(official["date"])
+    baseline_model = "momentum_90d" if (official["model"] == "momentum_90d").any() else "buy_hold_direction"
+    baseline = official[official["model"] == baseline_model].set_index("date").sort_index()
+    rows = []
+    for model_name in ["logistic_linear", "hgb", "random_forest"]:
+        model = official[official["model"] == model_name].set_index("date").sort_index()
+        common = model.index.intersection(baseline.index)
+        if len(common) == 0:
+            continue
+        joined = pd.DataFrame(
+            {
+                "date": common,
+                "model_signal": model.loc[common, "signal"].astype(str).values,
+                "baseline_signal": baseline.loc[common, "signal"].astype(str).values,
+                "asset_return": model.loc[common, "asset_return"].astype(float).values,
+                "model_return": model.loc[common, "tc_adjusted_strategy_return"].astype(float).values,
+                "baseline_return": baseline.loc[common, "tc_adjusted_strategy_return"].astype(float).values,
+            }
+        )
+        masks = _slice_equity_periods(joined, raw)
+        for period_slice, mask in masks.items():
+            part = joined.loc[mask.to_numpy()].copy()
+            if part.empty:
+                continue
+            actual_up = part["asset_return"] > 0
+            model_pred = part["model_signal"] == "long"
+            baseline_pred = part["baseline_signal"] == "long"
+            model_correct = model_pred == actual_up
+            baseline_correct = baseline_pred == actual_up
+            model_acc = float(model_correct.mean())
+            baseline_acc = float(baseline_correct.mean())
+            model_tc = float((1 + part["model_return"]).prod() - 1)
+            baseline_tc = float((1 + part["baseline_return"]).prod() - 1)
+            model_win = int((model_correct & ~baseline_correct).sum())
+            baseline_win = int((baseline_correct & ~model_correct).sum())
+            ties = int((model_correct == baseline_correct).sum())
+            if model_acc > baseline_acc and model_tc > baseline_tc:
+                result = "ml_wins"
+            elif model_acc < baseline_acc or model_tc < baseline_tc:
+                result = "baseline_dominates"
+            else:
+                result = "mixed_or_tie"
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "period_slice": period_slice,
+                    "model_name": model_name,
+                    "baseline_model": baseline_model,
+                    "n_samples": int(len(part)),
+                    "model_directional_accuracy": model_acc,
+                    "baseline_directional_accuracy": baseline_acc,
+                    "accuracy_delta_vs_baseline": model_acc - baseline_acc,
+                    "model_tc_return": model_tc,
+                    "baseline_tc_return": baseline_tc,
+                    "return_delta_vs_baseline": model_tc - baseline_tc,
+                    "model_win_months": model_win,
+                    "baseline_win_months": baseline_win,
+                    "tie_months": ties,
+                    "dominance_result": result,
+                    "notes": "Uses official 30d non-overlapping equity rows; candidate feature packs are covered in btc_factor_rescue_report.",
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -4923,6 +5217,21 @@ def write_diagnostics(
             latest_interpretation,
         ),
         "btc_no_edge_drilldown.csv": btc_no_edge_drilldown(run_id, asset_policy["asset_feature_set_leaderboard.csv"]),
+        "btc_edge_failure_audit.csv": btc_edge_failure_audit(
+            run_id,
+            asset_policy["asset_feature_set_leaderboard.csv"],
+            base_outputs["model_leaderboard.csv"],
+        ),
+        "btc_factor_rescue_report.csv": btc_factor_rescue_report(
+            run_id,
+            asset_policy["asset_feature_set_leaderboard.csv"],
+            base_outputs["model_leaderboard.csv"],
+        ),
+        "btc_baseline_dominance_report.csv": btc_baseline_dominance_report(
+            run_id,
+            raw,
+            base_outputs["equity_curves.csv"],
+        ),
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)

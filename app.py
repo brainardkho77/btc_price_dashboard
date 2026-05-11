@@ -117,6 +117,9 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "sol_selection_audit": read_diagnostic("sol_selection_audit.csv"),
         "sol_signal_policy_deployment": read_diagnostic("sol_signal_policy_deployment.csv"),
         "btc_no_edge_drilldown": read_diagnostic("btc_no_edge_drilldown.csv"),
+        "btc_edge_failure_audit": read_diagnostic("btc_edge_failure_audit.csv"),
+        "btc_factor_rescue_report": read_diagnostic("btc_factor_rescue_report.csv"),
+        "btc_baseline_dominance_report": read_diagnostic("btc_baseline_dominance_report.csv"),
     }
     data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     data["diagnostic_warnings"] = diagnostic_warnings
@@ -303,6 +306,9 @@ sol_signal_policy_deployment = outputs["sol_signal_policy_deployment"]
 sol_deployability_audit = outputs["sol_deployability_audit"]
 spx_risk_off_audit = outputs["spx_risk_off_audit"]
 btc_no_edge_drilldown_frame = outputs["btc_no_edge_drilldown"]
+btc_edge_failure_audit = outputs["btc_edge_failure_audit"]
+btc_factor_rescue_report = outputs["btc_factor_rescue_report"]
+btc_baseline_dominance_report = outputs["btc_baseline_dominance_report"]
 manifest = outputs["manifest"]
 asset_name = str(manifest.get("asset_name") or asset_config.display_name)
 
@@ -898,6 +904,43 @@ with signal_tab:
                     hide_index=True,
                 )
 
+            st.subheader("BTC Factor Rescue")
+            if btc_factor_rescue_report.empty:
+                st.caption("No BTC factor rescue report was recorded in this run.")
+            else:
+                st.dataframe(
+                    btc_factor_rescue_report.sort_values(
+                        ["rescue_status", "directional_accuracy", "tc_adjusted_return"],
+                        ascending=[True, False, False],
+                        na_position="last",
+                    )[
+                        [
+                            "candidate_feature_set",
+                            "model_name",
+                            "n_features",
+                            "n_samples",
+                            "directional_accuracy",
+                            "tc_adjusted_return",
+                            "bootstrap_ci_low",
+                            "permutation_p_value",
+                            "beats_all_baselines",
+                            "regime_stability_pass",
+                            "closest_failed_gate",
+                            "rescue_status",
+                            "rejection_reason",
+                        ]
+                    ].style.format(
+                        {
+                            "directional_accuracy": "{:.1%}",
+                            "tc_adjusted_return": "{:.1%}",
+                            "bootstrap_ci_low": "{:.1%}",
+                            "permutation_p_value": "{:.3f}",
+                        }
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+
         if selected_asset == "sol":
             st.subheader("SOL Stability")
             if sol_stability_report.empty:
@@ -1065,6 +1108,96 @@ with no_edge_tab:
                         "max_drawdown": "{:.1%}",
                         "bootstrap_ci_low": "{:.1%}",
                         "permutation_p_value": "{:.3f}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+
+        st.subheader("BTC Distance to Deployable")
+        if btc_edge_failure_audit.empty:
+            st.warning("No precomputed BTC edge failure audit is available.")
+        else:
+            best_failure = btc_edge_failure_audit.sort_values(
+                ["gate_failure_count", "directional_accuracy", "tc_adjusted_return"],
+                ascending=[True, False, False],
+                na_position="last",
+            ).head(1)
+            if not best_failure.empty:
+                best_row = best_failure.iloc[0]
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Closest candidate", str(best_row["candidate_feature_set"]))
+                c2.metric("Failed gates", str(int(best_row["gate_failure_count"])))
+                c3.metric("Closest failed gate", str(best_row["closest_failed_gate"]))
+                c4.metric("Category", str(best_row["failure_category"]))
+                st.caption(str(best_row["recommended_next_action"]))
+            st.dataframe(
+                btc_edge_failure_audit.sort_values(
+                    ["gate_failure_count", "directional_accuracy"],
+                    ascending=[True, False],
+                    na_position="last",
+                )[
+                    [
+                        "candidate_feature_set",
+                        "model_name",
+                        "directional_accuracy",
+                        "accuracy_gap_to_momentum_90d",
+                        "tc_adjusted_return",
+                        "return_gap_to_best_baseline",
+                        "bootstrap_ci_low",
+                        "permutation_p_value",
+                        "regime_stability_pass",
+                        "gate_failure_count",
+                        "closest_failed_gate",
+                        "failure_category",
+                    ]
+                ].head(30).style.format(
+                    {
+                        "directional_accuracy": "{:.1%}",
+                        "accuracy_gap_to_momentum_90d": "{:.1%}",
+                        "tc_adjusted_return": "{:.1%}",
+                        "return_gap_to_best_baseline": "{:.1%}",
+                        "bootstrap_ci_low": "{:.1%}",
+                        "permutation_p_value": "{:.3f}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+
+        st.subheader("BTC Baseline Dominance")
+        if btc_baseline_dominance_report.empty:
+            st.caption("No BTC baseline dominance report is available.")
+        else:
+            st.dataframe(
+                btc_baseline_dominance_report.sort_values(
+                    ["period_slice", "accuracy_delta_vs_baseline"],
+                    ascending=[True, False],
+                    na_position="last",
+                )[
+                    [
+                        "period_slice",
+                        "model_name",
+                        "baseline_model",
+                        "n_samples",
+                        "model_directional_accuracy",
+                        "baseline_directional_accuracy",
+                        "accuracy_delta_vs_baseline",
+                        "model_tc_return",
+                        "baseline_tc_return",
+                        "return_delta_vs_baseline",
+                        "model_win_months",
+                        "baseline_win_months",
+                        "dominance_result",
+                    ]
+                ].style.format(
+                    {
+                        "model_directional_accuracy": "{:.1%}",
+                        "baseline_directional_accuracy": "{:.1%}",
+                        "accuracy_delta_vs_baseline": "{:.1%}",
+                        "model_tc_return": "{:.1%}",
+                        "baseline_tc_return": "{:.1%}",
+                        "return_delta_vs_baseline": "{:.1%}",
                     }
                 ),
                 width="stretch",

@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `spx_research_20260511T075454Z`
+- Full refresh run ID: `spx_research_20260511T155059Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -23,14 +23,14 @@ Validation gates failed by ML model:
 ## Feature Group Findings
 - `dollar_rates_only` / `logistic_linear`: samples `99`, accuracy `68.7%`, net return `212.0%`, reliability `Medium confidence`
 - `price_momentum_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
-- `all_features` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
-- `prediction_markets_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
-- `derivatives_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
-- `price_momentum_only` / `random_forest`: samples `99`, accuracy `67.7%`, net return `184.2%`, reliability `Low confidence`
-- `macro_liquidity_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
-- `onchain_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
-- `sol_ecosystem_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
+- `risk_assets_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
+- `risk_assets_only` / `logistic_linear`: samples `99`, accuracy `67.7%`, net return `216.9%`, reliability `Low confidence`
 - `stablecoins_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
+- `dollar_rates_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
+- `stablecoin_liquidity_v2` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
+- `btc_dominance_regime` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
+- `etf_flows` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
+- `btc_liquidity_interactions` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 
 ## Feature Group Watchlist
 - `dollar_rates_only` / `logistic_linear`: samples `99`, accuracy `68.7%`, Sharpe `1.01`, max drawdown `-18.2%`, Brier `0.215`, calibration error `0.097`, beats buy-hold `True`, beats momentum `True`.

@@ -1,0 +1,2 @@
+run_id,asset_id,source_status,rows,first_date,last_date,feature_name,latest_value,missing_pct,used_in_model,regime_observation_count,notes
+btc_research_20260511T151538Z,btc,skipped,0,,,btc_dominance,,1.0,False,0,Manual BTC dominance CSV is empty or unavailable; dominance regimes were not fabricated.

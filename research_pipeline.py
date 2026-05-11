@@ -185,6 +185,30 @@ MANUAL_DERIVATIVE_SPECS: Dict[str, ManualDerivativeSpec] = {
 }
 
 
+MANUAL_HIGH_CONVICTION_SPECS: Dict[str, ManualDerivativeSpec] = {
+    "btc_dominance": ManualDerivativeSpec(
+        dataset="btc_dominance",
+        metric="btc_dominance",
+        filename="btc_dominance.csv",
+        required_columns=("date", "btc_dominance"),
+        rename_map={"btc_dominance": "btc_dominance"},
+        bounded_columns=(("btc_dominance", 0.0, 100.0),),
+    ),
+    "spot_btc_etf_flows": ManualDerivativeSpec(
+        dataset="spot_btc_etf_flows",
+        metric="btc_etf_flows",
+        filename="btc_etf_flows_farside.csv",
+        required_columns=("date", "net_flow_usd"),
+        rename_map={
+            "net_flow_usd": "btc_etf_net_flow_usd",
+            "ibit_flow_usd": "btc_etf_ibit_flow_usd",
+            "total_flow_usd": "btc_etf_total_flow_usd",
+            "ibit_share": "btc_etf_ibit_share",
+        },
+    ),
+}
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -1213,7 +1237,8 @@ def validate_manual_derivative_csv(path: Path, spec: ManualDerivativeSpec) -> Ma
     if frame.empty:
         return ManualCsvResult(spec, "skipped", None, "Manual CSV is an empty template.", 1.0)
 
-    work = frame.loc[:, list(spec.required_columns)].copy()
+    optional_columns = [col for col in spec.rename_map if col not in spec.required_columns and col in frame.columns]
+    work = frame.loc[:, list(spec.required_columns) + optional_columns].copy()
     parsed_dates = pd.to_datetime(work["date"], errors="coerce", utc=True)
     if parsed_dates.isna().any():
         return ManualCsvResult(spec, "failed", None, "Manual CSV contains unparsable dates.", 1.0)
@@ -1225,7 +1250,7 @@ def validate_manual_derivative_csv(path: Path, spec: ManualDerivativeSpec) -> Ma
     if not work["date"].is_monotonic_increasing:
         return ManualCsvResult(spec, "failed", None, "Manual CSV dates are not monotonic after sorting.", 1.0)
 
-    numeric_columns = [col for col in spec.required_columns if col != "date"]
+    numeric_columns = [col for col in work.columns if col != "date"]
     for col in numeric_columns:
         numeric = pd.to_numeric(work[col], errors="coerce")
         if numeric.isna().any() and work[col].notna().any():
@@ -1256,6 +1281,11 @@ def validate_manual_derivative_dataset(dataset: str) -> ManualCsvResult:
     return validate_manual_derivative_csv(MANUAL_DATA_DIR / spec.filename, spec)
 
 
+def validate_manual_high_conviction_dataset(dataset: str) -> ManualCsvResult:
+    spec = MANUAL_HIGH_CONVICTION_SPECS[dataset]
+    return validate_manual_derivative_csv(MANUAL_DATA_DIR / spec.filename, spec)
+
+
 def _manual_source_spec(dataset: str) -> SourceSpec:
     spec = MANUAL_DERIVATIVE_SPECS[dataset]
     return SourceSpec(
@@ -1265,6 +1295,18 @@ def _manual_source_spec(dataset: str) -> SourceSpec:
         requested_fields=[col for col in spec.required_columns if col != "date"],
         source_group="manual_csv",
         is_used_in_model=False,
+    )
+
+
+def _manual_high_conviction_source_spec(dataset: str) -> SourceSpec:
+    spec = MANUAL_HIGH_CONVICTION_SPECS[dataset]
+    return SourceSpec(
+        source="manual_csv",
+        endpoint=str(MANUAL_DATA_DIR / spec.filename),
+        dataset=dataset,
+        requested_fields=[col for col in spec.required_columns if col != "date"],
+        source_group="manual_csv",
+        is_used_in_model=True,
     )
 
 
@@ -1679,6 +1721,48 @@ def load_research_data(
     if asset.enable_onchain:
         loaders.insert(2, (coinmetrics_dataset, lambda: fetch_coinmetrics(force=refresh, start=config.start_date), True))
 
+    if asset.asset_id in {"btc", "sol"}:
+        dominance_result = validate_manual_high_conviction_dataset("btc_dominance")
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                _source_spec("btc_dominance", source_specs),
+                dominance_result.status,
+                dominance_result.frame,
+                failure_reason=dominance_result.failure_reason,
+                used_override=dominance_result.status == "worked",
+            )
+        )
+        if dominance_result.frame is not None and not dominance_result.frame.empty:
+            frames.append(dominance_result.frame)
+    if asset.asset_id == "btc":
+        etf_result = validate_manual_high_conviction_dataset("spot_btc_etf_flows")
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                _source_spec(etf_dataset, source_specs),
+                etf_result.status,
+                etf_result.frame,
+                failure_reason=etf_result.failure_reason,
+                used_override=etf_result.status == "worked",
+            )
+        )
+        if etf_result.frame is not None and not etf_result.frame.empty:
+            frames.append(etf_result.frame)
+    elif asset.asset_id != "btc":
+        records.append(
+            _availability_record(
+                run_id,
+                generated_at,
+                _source_spec(etf_dataset, source_specs),
+                "skipped" if asset.asset_id != "spx" else "unavailable",
+                failure_reason=f"{asset.display_name} v1 does not use BTC ETF flow factors; not fabricated.",
+                used_override=False,
+            )
+        )
+
     for dataset, fetcher, allow_quick_fetch in loaders:
         frame, record = _load_source(
             run_id,
@@ -1767,16 +1851,6 @@ def load_research_data(
             used_override=any(record["is_used_in_model"] for record in manual_records),
         )
     )
-    records.append(
-        _availability_record(
-            run_id,
-            generated_at,
-            _source_spec(etf_dataset, source_specs),
-            "unavailable",
-            failure_reason="No free source configured; ETF flows were not fabricated.",
-            used_override=False,
-        )
-    )
 
     raw = pd.concat(frames, axis=1).sort_index()
     raw = raw.loc[raw.index >= pd.Timestamp(effective_start)]
@@ -1814,6 +1888,8 @@ def load_research_data(
 
 
 def raw_column_source_group(column: str) -> str:
+    if column.startswith("btc_dominance") or column.startswith("btc_etf_"):
+        return "manual_csv"
     if (
         column.startswith("asset_")
         or column.startswith("btc_")
@@ -1925,10 +2001,85 @@ def add_research_external_features(released_raw: pd.DataFrame, out: pd.DataFrame
 
     if "stablecoin_total_circulating_usd" in released_raw:
         supply = pd.to_numeric(released_raw["stablecoin_total_circulating_usd"], errors="coerce")
+        supply_log = _safe_log(supply)
         out["stablecoins_supply_log"] = _safe_log(supply)
-        out["stablecoins_supply_chg_30d"] = _safe_log(supply).diff(30)
-        out["stablecoins_supply_chg_90d"] = _safe_log(supply).diff(90)
+        out["stablecoins_supply_chg_7d"] = supply_log.diff(7)
+        out["stablecoins_supply_chg_30d"] = supply_log.diff(30)
+        out["stablecoins_supply_chg_90d"] = supply_log.diff(90)
         out["stablecoins_supply_z_365d"] = _zscore(supply, 365, 120)
+        market_cap = pd.to_numeric(
+            released_raw.get("cm_market_cap_usd", pd.Series(index=released_raw.index, dtype=float)),
+            errors="coerce",
+        )
+        if market_cap.notna().sum() == 0:
+            price_for_cap = pd.to_numeric(released_raw.get("asset_close", pd.Series(index=released_raw.index, dtype=float)), errors="coerce")
+            market_cap = price_for_cap * np.nan
+        out["stablecoin_liquidity_supply_to_btc_market_cap"] = supply / market_cap.replace(0, np.nan)
+        out["stablecoin_liquidity_btc_market_cap_to_supply"] = market_cap / supply.replace(0, np.nan)
+        out["stablecoin_liquidity_supply_to_btc_market_cap_z_365d"] = _zscore(
+            out["stablecoin_liquidity_supply_to_btc_market_cap"], 365, 120
+        )
+        btc_return_30d = _safe_log(price / price.shift(30))
+        out["stablecoin_liquidity_impulse_30d"] = np.sign(btc_return_30d) * out["stablecoins_supply_chg_30d"]
+        out["stablecoin_liquidity_expansion_flag"] = (out["stablecoins_supply_chg_30d"] > 0).astype(float)
+
+    if "btc_dominance" in released_raw:
+        dominance = pd.to_numeric(released_raw["btc_dominance"], errors="coerce")
+        dominance_7d = dominance.diff(7)
+        dominance_30d = dominance.diff(30)
+        dominance_30d_z = _zscore(dominance_30d, 365, 120)
+        btc_dd_90 = price / price.rolling(90, min_periods=30).max() - 1
+        btc_ret_30d = _safe_log(price / price.shift(30))
+        out["btc_dominance_level"] = dominance
+        out["btc_dominance_chg_7d"] = dominance_7d
+        out["btc_dominance_chg_30d"] = dominance_30d
+        out["btc_dominance_z_90d"] = _zscore(dominance, 90, 30)
+        out["btc_dominance_z_365d"] = _zscore(dominance, 365, 120)
+        out["btc_dominance_drawdown_365d"] = dominance / dominance.rolling(365, min_periods=120).max() - 1
+        capitulation = (dominance_30d_z < -1.0) & (btc_dd_90 < -0.15)
+        rotation_starting = (dominance_30d < 0) & (dominance_7d > (dominance_30d / 4.0)) & ~capitulation
+        alt_season = (dominance_30d_z < -1.0) & ~capitulation & ~rotation_starting
+        accumulation = (dominance_30d_z > 0.5) & (pd.to_numeric(released_raw.get("fear_greed_value", 50), errors="coerce") < 45)
+        safe_haven = (dominance_30d_z > 1.0) & (btc_ret_30d >= 0)
+        regimes = {
+            "capitulation": capitulation,
+            "rotation_starting": rotation_starting,
+            "alt_season": alt_season,
+            "accumulation": accumulation,
+            "btc_safe_haven": safe_haven,
+        }
+        for regime, mask in regimes.items():
+            out[f"btc_dominance_regime_{regime}"] = mask.astype(float)
+        if "stablecoin_liquidity_impulse_30d" in out:
+            out["btc_liquidity_interaction_dominance_x_stablecoin_impulse"] = dominance_30d_z * out["stablecoin_liquidity_impulse_30d"]
+            out["btc_liquidity_interaction_confirmed_rally"] = (
+                (btc_ret_30d > 0) & (out["stablecoins_supply_chg_30d"] > 0) & (dominance_30d_z >= 0)
+            ).astype(float)
+            out["btc_liquidity_interaction_fragile_rally"] = (
+                (btc_ret_30d > 0) & (out["stablecoins_supply_chg_30d"] <= 0)
+            ).astype(float)
+            out["btc_liquidity_interaction_golden_rotation"] = (
+                alt_season & (out["stablecoins_supply_chg_30d"] > 0)
+            ).astype(float)
+
+    if "btc_etf_net_flow_usd" in released_raw:
+        flow = pd.to_numeric(released_raw["btc_etf_net_flow_usd"], errors="coerce")
+        flow_signed_log = np.sign(flow) * np.log1p(flow.abs())
+        out["etf_flow_daily_net_signed_log"] = flow_signed_log
+        out["etf_flow_net_7d_signed_log"] = np.sign(flow.rolling(7, min_periods=3).sum()) * np.log1p(flow.rolling(7, min_periods=3).sum().abs())
+        out["etf_flow_net_30d_signed_log"] = np.sign(flow.rolling(30, min_periods=10).sum()) * np.log1p(flow.rolling(30, min_periods=10).sum().abs())
+        cumulative = flow.fillna(0).cumsum()
+        out["etf_flow_cumulative_z_365d"] = _zscore(cumulative, 365, 120)
+        if "btc_etf_ibit_share" in released_raw:
+            out["etf_flow_ibit_share"] = pd.to_numeric(released_raw["btc_etf_ibit_share"], errors="coerce")
+        elif {"btc_etf_ibit_flow_usd", "btc_etf_total_flow_usd"}.issubset(released_raw.columns):
+            ibit = pd.to_numeric(released_raw["btc_etf_ibit_flow_usd"], errors="coerce")
+            total = pd.to_numeric(released_raw["btc_etf_total_flow_usd"], errors="coerce")
+            out["etf_flow_ibit_share"] = ibit / total.replace(0, np.nan)
+        btc_ret_30d = _safe_log(price / price.shift(30))
+        out["etf_flow_x_btc_ret_30d"] = out["etf_flow_net_30d_signed_log"] * btc_ret_30d
+        if "btc_dominance_z_365d" in out:
+            out["etf_flow_x_btc_dominance_z"] = out["etf_flow_net_30d_signed_log"] * out["btc_dominance_z_365d"]
 
     solana_columns = {
         "solana_stablecoin_circulating_usd": "stablecoin_supply",
@@ -1994,6 +2145,14 @@ def select_feature_columns(features: pd.DataFrame, config: ResearchConfig) -> Li
 
 
 def _feature_source(feature: str) -> Tuple[str, str, str, int]:
+    if feature.startswith("btc_dominance_"):
+        return "manual_csv", "btc_dominance", "BTC dominance regime transform", 1
+    if feature.startswith("stablecoin_liquidity_"):
+        return "stablecoins", "stablecoin_total_circulating_usd", "stablecoin liquidity v2 transform", 1
+    if feature.startswith("etf_flow_"):
+        return "manual_csv", "btc_etf_net_flow_usd", "ETF flow transform", 1
+    if feature.startswith("btc_liquidity_interaction_"):
+        return "manual_csv", "btc_dominance|stablecoin_total_circulating_usd|btc_etf_net_flow_usd", "liquidity regime interaction", 1
     if feature.startswith("derivatives_"):
         raw = "binance_" + feature.replace("derivatives_", "").split("_chg_")[0].split("_z_")[0]
         return "binance_derivatives", raw, "derivatives transform", 1

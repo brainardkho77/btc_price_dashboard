@@ -154,9 +154,15 @@ cycle_cos_4y,price,asset_close,price/technical transform,0,0,2020-04-10,2026-05-
 cycle_month_sin,price,asset_close,price/technical transform,0,0,2020-04-10,2026-05-11,0.0,True
 cycle_month_cos,price,asset_close,price/technical transform,0,0,2020-04-10,2026-05-11,0.0,True
 stablecoins_supply_log,stablecoins,stablecoin_total_circulating_usd,stablecoin transform,1,1,2020-04-11,2026-05-11,0.00044984255510571725,True
+stablecoins_supply_chg_7d,stablecoins,stablecoin_total_circulating_usd,stablecoin transform,1,1,2020-04-18,2026-05-11,0.003598740440845738,True
 stablecoins_supply_chg_30d,stablecoins,stablecoin_total_circulating_usd,stablecoin transform,1,1,2020-05-11,2026-05-11,0.013945119208277124,True
 stablecoins_supply_chg_90d,stablecoins,stablecoin_total_circulating_usd,stablecoin transform,1,1,2020-07-10,2026-05-11,0.040935672514619936,True
 stablecoins_supply_z_365d,stablecoins,stablecoin_total_circulating_usd,stablecoin transform,1,1,2020-08-08,2026-05-11,0.053981106612685514,True
+stablecoin_liquidity_supply_to_btc_market_cap,stablecoins,stablecoin_total_circulating_usd,stablecoin liquidity v2 transform,1,1,,,1.0,False
+stablecoin_liquidity_btc_market_cap_to_supply,stablecoins,stablecoin_total_circulating_usd,stablecoin liquidity v2 transform,1,1,,,1.0,False
+stablecoin_liquidity_supply_to_btc_market_cap_z_365d,stablecoins,stablecoin_total_circulating_usd,stablecoin liquidity v2 transform,1,1,,,1.0,False
+stablecoin_liquidity_impulse_30d,stablecoins,stablecoin_total_circulating_usd,stablecoin liquidity v2 transform,1,1,2020-05-11,2026-05-11,0.013945119208277124,True
+stablecoin_liquidity_expansion_flag,stablecoins,stablecoin_total_circulating_usd,stablecoin liquidity v2 transform,1,1,2020-04-10,2026-05-11,0.0,True
 solana_ecosystem_stablecoin_supply_log,solana_ecosystem,solana_stablecoin_circulating_usd,Solana ecosystem transform,1,1,2021-09-11,2026-05-11,0.23346828609986503,True
 solana_ecosystem_stablecoin_supply_chg_7d,solana_ecosystem,solana_stablecoin_circulating_usd,Solana ecosystem transform,1,1,2021-09-18,2026-05-11,0.23661718398560505,True
 solana_ecosystem_stablecoin_supply_chg_30d,solana_ecosystem,solana_stablecoin_circulating_usd,Solana ecosystem transform,1,1,2021-10-11,2026-05-11,0.24696356275303644,True

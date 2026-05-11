@@ -201,9 +201,15 @@ derivatives_sum_open_interest_value_z_90d_x_momentum_90d_regime,binance_derivati
 derivatives_long_short_ratio_z_90d_x_momentum_90d_regime,binance_derivatives,binance_long_short_ratio,derivatives transform,1,1,2020-10-01,2026-05-11,0.5061460592913956,True
 derivatives_taker_buy_sell_ratio_z_90d_x_momentum_90d_regime,binance_derivatives,binance_taker_buy_sell_ratio,derivatives transform,1,1,2020-10-01,2026-05-11,0.5085562786213546,True
 stablecoins_supply_log,stablecoins,stablecoin_total_circulating_usd,stablecoin transform,1,1,2017-11-30,2026-05-11,0.2564473367076404,True
+stablecoins_supply_chg_7d,stablecoins,stablecoin_total_circulating_usd,stablecoin transform,1,1,2017-12-07,2026-05-11,0.2581344902386117,True
 stablecoins_supply_chg_30d,stablecoins,stablecoin_total_circulating_usd,stablecoin transform,1,1,2017-12-30,2026-05-11,0.2636779946975175,True
 stablecoins_supply_chg_90d,stablecoins,stablecoin_total_circulating_usd,stablecoin transform,1,1,2018-02-28,2026-05-11,0.2781393106772716,True
 stablecoins_supply_z_365d,stablecoins,stablecoin_total_circulating_usd,stablecoin transform,1,1,2018-03-29,2026-05-11,0.2851289467341528,True
+stablecoin_liquidity_supply_to_btc_market_cap,stablecoins,stablecoin_total_circulating_usd,stablecoin liquidity v2 transform,1,1,2017-11-30,2026-05-11,0.2564473367076404,True
+stablecoin_liquidity_btc_market_cap_to_supply,stablecoins,stablecoin_total_circulating_usd,stablecoin liquidity v2 transform,1,1,2017-11-30,2026-05-11,0.2564473367076404,True
+stablecoin_liquidity_supply_to_btc_market_cap_z_365d,stablecoins,stablecoin_total_circulating_usd,stablecoin liquidity v2 transform,1,1,2018-03-29,2026-05-11,0.2851289467341528,True
+stablecoin_liquidity_impulse_30d,stablecoins,stablecoin_total_circulating_usd,stablecoin liquidity v2 transform,1,1,2017-12-30,2026-05-11,0.2636779946975175,True
+stablecoin_liquidity_expansion_flag,stablecoins,stablecoin_total_circulating_usd,stablecoin liquidity v2 transform,1,1,2015-01-01,2026-05-11,0.0,True
 polymarket_implied_median_gap,polymarket_prediction_markets,polymarket_implied_median_gap,prediction-market transform,1,1,2024-03-01,2026-05-11,0.8067004097372861,False
 polymarket_upside_probability,polymarket_prediction_markets,polymarket_upside_probability,prediction-market transform,1,1,2024-03-01,2026-05-11,0.8067004097372861,False
 polymarket_upside_probability_chg_7d,polymarket_prediction_markets,polymarket_upside_probability,prediction-market transform,1,1,2024-03-08,2026-05-11,0.8083875632682574,False

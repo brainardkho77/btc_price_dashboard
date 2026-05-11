@@ -1,0 +1,1 @@
+run_id,asset_id,source_status,rows,first_date,last_date,missing_pct,latest_daily_net_flow_usd,latest_7d_net_flow_usd,latest_30d_net_flow_usd,latest_ibit_share,used_in_model,failure_reason

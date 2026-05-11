@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `sol_research_20260511T074534Z`
+- Full refresh run ID: `sol_research_20260511T154021Z`
 - Selected model: `logistic_linear`
 - Signal: `neutral`
 - Reliability: `Medium confidence`
@@ -17,31 +17,31 @@ Quick baseline was unavailable, so quick-vs-full comparisons are limited.
 
 Validation gates failed by ML model:
 - `logistic_linear`: selected_model
-- `hgb`: did_not_beat_90d_momentum; did_not_beat_random_baseline; failed_transaction_cost_check; failed_calibration_check; low_reliability
-- `random_forest`: not_selected_by_primary_30d_rules
+- `hgb`: not_selected_by_primary_30d_rules
+- `random_forest`: did_not_beat_90d_momentum; did_not_beat_random_baseline; failed_transaction_cost_check; low_reliability
 
 ## Feature Group Findings
+- `stablecoins_only` / `logistic_linear`: samples `36`, accuracy `75.0%`, net return `1465.9%`, reliability `Medium confidence`
 - `dollar_rates_only` / `random_forest`: samples `36`, accuracy `72.2%`, net return `1080.1%`, reliability `Medium confidence`
 - `all_features` / `logistic_linear`: samples `36`, accuracy `69.4%`, net return `982.7%`, reliability `Medium confidence`
-- `macro_liquidity_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `772.7%`, reliability `Medium confidence`
+- `stablecoins_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `465.2%`, reliability `Low confidence`
+- `sol_ecosystem_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `1124.4%`, reliability `Medium confidence`
 - `sol_ecosystem_only` / `logistic_linear`: samples `36`, accuracy `66.7%`, net return `957.8%`, reliability `Medium confidence`
-- `price_momentum_only` / `logistic_linear`: samples `36`, accuracy `66.7%`, net return `544.6%`, reliability `Medium confidence`
-- `risk_assets_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `924.3%`, reliability `Medium confidence`
-- `risk_assets_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `824.7%`, reliability `Medium confidence`
-- `dollar_rates_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `1044.9%`, reliability `Medium confidence`
 - `macro_liquidity_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `644.6%`, reliability `Medium confidence`
-- `sol_ecosystem_only` / `random_forest`: samples `36`, accuracy `63.9%`, net return `1055.2%`, reliability `Medium confidence`
+- `macro_liquidity_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `772.7%`, reliability `Medium confidence`
+- `dollar_rates_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `1044.9%`, reliability `Medium confidence`
+- `price_momentum_only` / `logistic_linear`: samples `36`, accuracy `66.7%`, net return `544.6%`, reliability `Medium confidence`
 
 ## Feature Group Watchlist
 - `dollar_rates_only` / `logistic_linear`: samples `36`, accuracy `63.9%`, Sharpe `1.28`, max drawdown `-37.4%`, Brier `0.256`, calibration error `0.105`, beats buy-hold `True`, beats momentum `True`.
 - It remains diagnostic only because feature-group results are not official model-selection inputs and must prove stability across regimes first.
 
 ## Regime Findings
-- `hgb` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Low confidence`
-- `random_forest` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Medium confidence`
 - `buy_hold_direction` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Low confidence`
 - `logistic_linear` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Medium confidence`
+- `random_forest` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Low confidence`
 - `random_permutation` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Low confidence`
+- `hgb` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Medium confidence`
 - `logistic_linear` in `pre_etf`: samples `9`, accuracy `77.8%`, net return `368.0%`, reliability `Medium confidence`
 - `logistic_linear` in `pre_halving`: samples `12`, accuracy `75.0%`, net return `504.9%`, reliability `Medium confidence`
 - `logistic_linear` in `bear_market`: samples `14`, accuracy `71.4%`, net return `47.4%`, reliability `Medium confidence`

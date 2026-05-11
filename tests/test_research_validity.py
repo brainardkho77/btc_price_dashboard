@@ -13,6 +13,7 @@ import data_sources
 from data_sources import FRED_SERIES, fetch_fred_api_series, fred_api_key, fred_api_key_configured, sanitize_fred_error
 from research_pipeline import (
     MANUAL_DERIVATIVE_SPECS,
+    MANUAL_HIGH_CONVICTION_SPECS,
     _is_monthly_polymarket_event,
     _parse_polymarket_threshold,
     _parse_binance_archive_zip,
@@ -28,6 +29,7 @@ from research_pipeline import (
     select_feature_columns,
     select_primary_model,
     validate_manual_derivative_csv,
+    validate_manual_high_conviction_dataset,
     window_fingerprint,
 )
 from diagnostic_outputs import (
@@ -41,11 +43,13 @@ from diagnostic_outputs import (
     btc_baseline_dominance_report,
     btc_edge_failure_audit,
     btc_factor_rescue_report,
+    factor_pack_promotion_audit,
     btc_no_edge_drilldown,
     candidate_feature_sets,
     derivatives_coverage,
     feature_pruning_report,
     feature_group_for_feature,
+    high_conviction_factor_leaderboard,
     fred_macro_impact_report,
     fred_vs_fallback_summary,
     high_confidence_signal_floor,
@@ -95,6 +99,8 @@ def synthetic_research_raw(rows=1500):
             "trade_weighted_usd": 120 + np.cos(np.arange(rows) / 70),
             "m2_money_supply": 20_000 + np.arange(rows),
             "stablecoin_total_circulating_usd": 100_000_000_000 + np.arange(rows) * 10_000_000,
+            "btc_dominance": 52 + np.sin(np.arange(rows) / 55) * 4,
+            "btc_etf_net_flow_usd": np.sin(np.arange(rows) / 11) * 100_000_000,
             "binance_funding_rate": 0.0001 + np.sin(np.arange(rows) / 10) * 0.00005,
         },
         index=dates,
@@ -297,6 +303,24 @@ def test_solana_ecosystem_features_are_audited_and_candidate_packed():
     assert any(col.startswith("solana_ecosystem_") for col in sets["sol_ecosystem_pack"])
 
 
+def test_high_conviction_btc_features_are_lagged_and_candidate_packed():
+    config = ResearchConfig()
+    raw = synthetic_research_raw(rows=900)
+    feature_result = build_features(raw, config)
+    assert "btc_dominance_level" in feature_result.features.columns
+    assert "stablecoin_liquidity_impulse_30d" in feature_result.features.columns
+    assert "etf_flow_net_30d_signed_log" in feature_result.features.columns
+    audit = feature_result.feature_audit.set_index("feature_name")
+    assert audit.loc["btc_dominance_level", "release_delay_days"] == 1
+    assert audit.loc["etf_flow_net_30d_signed_log", "release_delay_days"] == 1
+    sets = candidate_feature_sets(feature_result.feature_cols, "btc")
+    assert "btc_dominance_regime_pack" in sets
+    assert "btc_stablecoin_liquidity_v2" in sets
+    assert "btc_core_liquidity_regime_v2" in sets
+    assert any(col.startswith("btc_dominance_") for col in sets["btc_dominance_regime_pack"])
+    assert any(col.startswith("stablecoin_liquidity_") for col in sets["btc_stablecoin_liquidity_v2"])
+
+
 def test_target_generation_uses_future_prices_only():
     config = ResearchConfig()
     raw = synthetic_research_raw()
@@ -421,6 +445,11 @@ def test_diagnostic_schemas_include_required_outputs():
         "btc_edge_failure_audit.csv",
         "btc_factor_rescue_report.csv",
         "btc_baseline_dominance_report.csv",
+        "btc_dominance_regime_report.csv",
+        "btc_etf_flow_coverage.csv",
+        "stablecoin_liquidity_v2_report.csv",
+        "high_conviction_factor_leaderboard.csv",
+        "factor_pack_promotion_audit.csv",
         "asset_deployability_report.csv",
         "sol_deployability_audit.csv",
         "spx_risk_off_audit.csv",
@@ -447,6 +476,11 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "distance_to_deployable" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_edge_failure_audit.csv"]
     assert "rescue_status" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_factor_rescue_report.csv"]
     assert "dominance_result" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_baseline_dominance_report.csv"]
+    assert "source_status" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_dominance_regime_report.csv"]
+    assert "latest_30d_net_flow_usd" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_etf_flow_coverage.csv"]
+    assert "feature_name" in DIAGNOSTIC_OUTPUT_SCHEMAS["stablecoin_liquidity_v2_report.csv"]
+    assert "candidate_feature_set" in DIAGNOSTIC_OUTPUT_SCHEMAS["high_conviction_factor_leaderboard.csv"]
+    assert "failed_gates" in DIAGNOSTIC_OUTPUT_SCHEMAS["factor_pack_promotion_audit.csv"]
     assert "equity_chart_role" in DIAGNOSTIC_OUTPUT_SCHEMAS["asset_deployability_report.csv"]
     assert "unavailable_gates" in DIAGNOSTIC_OUTPUT_SCHEMAS["sol_deployability_audit.csv"]
     assert "threshold_selected_on" in DIAGNOSTIC_OUTPUT_SCHEMAS["spx_risk_off_audit.csv"]
@@ -1568,6 +1602,10 @@ def test_candidate_feature_sets_keep_polymarket_diagnostic_only():
         "macro_treasury_general_account_ret_30d",
         "cross_asset_spx_ret_30d",
         "stablecoins_supply_chg_30d",
+        "stablecoin_liquidity_impulse_30d",
+        "btc_dominance_level",
+        "btc_dominance_regime_alt_season",
+        "etf_flow_net_30d_signed_log",
         "derivatives_funding_rate",
         "derivatives_top_trader_account_long_short_ratio_z_90d",
         "solana_ecosystem_tvl_chg_30d",
@@ -1579,6 +1617,10 @@ def test_candidate_feature_sets_keep_polymarket_diagnostic_only():
     assert "btc_derivatives_v2_pack" in sets
     assert "derivatives_top_trader_account_long_short_ratio_z_90d" in sets["btc_derivatives_v2_pack"]
     assert "btc_macro_liquidity_v2" in sets
+    assert "btc_dominance_regime_pack" in sets
+    assert "btc_stablecoin_liquidity_v2" in sets
+    assert "btc_etf_flow_pack" in sets
+    assert "btc_core_liquidity_regime_v2" in sets
     sol_sets = candidate_feature_sets(cols, "sol")
     assert "sol_ecosystem_pack" in sol_sets
     assert "solana_ecosystem_tvl_chg_30d" in sol_sets["sol_ecosystem_pack"]
@@ -1648,6 +1690,38 @@ def test_manual_derivative_csv_validation_statuses(tmp_path):
     impossible = tmp_path / "impossible.csv"
     impossible.write_text("date,funding_rate\n2024-01-01,2.0\n", encoding="utf-8")
     assert validate_manual_derivative_csv(impossible, spec).status == "failed"
+
+
+def test_manual_btc_dominance_csv_validation_statuses(tmp_path):
+    spec = MANUAL_HIGH_CONVICTION_SPECS["btc_dominance"]
+    valid = tmp_path / "btc_dominance.csv"
+    valid.write_text("date,btc_dominance\n2024-01-01,51.5\n2024-01-02,52.1\n", encoding="utf-8")
+    result = validate_manual_derivative_csv(valid, spec)
+    assert result.status == "worked"
+    assert list(result.frame.columns) == ["btc_dominance"]
+
+    empty = tmp_path / "empty_btc_dominance.csv"
+    empty.write_text("date,btc_dominance\n", encoding="utf-8")
+    assert validate_manual_derivative_csv(empty, spec).status == "skipped"
+
+    impossible = tmp_path / "bad_btc_dominance.csv"
+    impossible.write_text("date,btc_dominance\n2024-01-01,140\n", encoding="utf-8")
+    assert validate_manual_derivative_csv(impossible, spec).status == "failed"
+
+
+def test_manual_etf_flow_csv_validation_keeps_optional_columns(tmp_path):
+    spec = MANUAL_HIGH_CONVICTION_SPECS["spot_btc_etf_flows"]
+    path = tmp_path / "btc_etf_flows_farside.csv"
+    path.write_text(
+        "date,net_flow_usd,ibit_flow_usd,total_flow_usd,ibit_share\n"
+        "2024-01-11,100000000,50000000,120000000,0.4167\n"
+        "2024-01-12,-50000000,10000000,-30000000,-0.3333\n",
+        encoding="utf-8",
+    )
+    result = validate_manual_derivative_csv(path, spec)
+    assert result.status == "worked"
+    assert "btc_etf_net_flow_usd" in result.frame.columns
+    assert "btc_etf_ibit_share" in result.frame.columns
 
 
 def test_archive_ratio_manual_csvs_validate_with_real_available_columns(tmp_path):

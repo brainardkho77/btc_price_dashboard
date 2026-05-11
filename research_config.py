@@ -347,13 +347,24 @@ def build_source_specs(asset: AssetConfig) -> List[SourceSpec]:
         ),
         SourceSpec(
             source="ETF flows",
-            endpoint="not configured",
+            endpoint="data/manual/btc_etf_flows_farside.csv" if asset.asset_id == "btc" else "not configured",
             dataset=etf_dataset,
-            requested_fields=["etf_flow_usd"],
+            requested_fields=["net_flow_usd", "ibit_flow_usd", "total_flow_usd", "ibit_share"],
             source_group="manual_csv",
-            is_used_in_model=False,
+            is_used_in_model=asset.asset_id == "btc",
         ),
     ]
+    if asset.asset_id in {"btc", "sol"}:
+        specs.append(
+            SourceSpec(
+                source="Manual BTC dominance",
+                endpoint="data/manual/btc_dominance.csv",
+                dataset="btc_dominance",
+                requested_fields=["btc_dominance"],
+                source_group="manual_csv",
+                is_used_in_model=True,
+            )
+        )
     if asset.asset_id == "sol":
         specs.extend(
             [

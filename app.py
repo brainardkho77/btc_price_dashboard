@@ -120,6 +120,11 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "btc_edge_failure_audit": read_diagnostic("btc_edge_failure_audit.csv"),
         "btc_factor_rescue_report": read_diagnostic("btc_factor_rescue_report.csv"),
         "btc_baseline_dominance_report": read_diagnostic("btc_baseline_dominance_report.csv"),
+        "btc_dominance_regime_report": read_diagnostic("btc_dominance_regime_report.csv"),
+        "btc_etf_flow_coverage": read_diagnostic("btc_etf_flow_coverage.csv"),
+        "stablecoin_liquidity_v2_report": read_diagnostic("stablecoin_liquidity_v2_report.csv"),
+        "high_conviction_factor_leaderboard": read_diagnostic("high_conviction_factor_leaderboard.csv"),
+        "factor_pack_promotion_audit": read_diagnostic("factor_pack_promotion_audit.csv"),
     }
     data["manifest"] = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     data["diagnostic_warnings"] = diagnostic_warnings
@@ -309,6 +314,11 @@ btc_no_edge_drilldown_frame = outputs["btc_no_edge_drilldown"]
 btc_edge_failure_audit = outputs["btc_edge_failure_audit"]
 btc_factor_rescue_report = outputs["btc_factor_rescue_report"]
 btc_baseline_dominance_report = outputs["btc_baseline_dominance_report"]
+btc_dominance_regime_report = outputs["btc_dominance_regime_report"]
+btc_etf_flow_coverage = outputs["btc_etf_flow_coverage"]
+stablecoin_liquidity_v2_report = outputs["stablecoin_liquidity_v2_report"]
+high_conviction_factor_leaderboard = outputs["high_conviction_factor_leaderboard"]
+factor_pack_promotion_audit = outputs["factor_pack_promotion_audit"]
 manifest = outputs["manifest"]
 asset_name = str(manifest.get("asset_name") or asset_config.display_name)
 
@@ -583,6 +593,84 @@ with signal_tab:
             width="stretch",
             hide_index=True,
         )
+
+    st.subheader("High-Conviction Factors")
+    st.caption("BTC dominance, ETF flows, and liquidity-regime factors are diagnostic-first. They cannot become official unless existing 30d gates pass.")
+    if selected_asset == "btc":
+        hc_cols = st.columns(3)
+        if btc_dominance_regime_report.empty:
+            hc_cols[0].metric("BTC dominance", "missing")
+        else:
+            dom_status = str(btc_dominance_regime_report.iloc[0].get("source_status", "unknown"))
+            hc_cols[0].metric("BTC dominance", dom_status)
+        if btc_etf_flow_coverage.empty:
+            hc_cols[1].metric("ETF flows", "missing")
+        else:
+            etf_status = str(btc_etf_flow_coverage.iloc[0].get("source_status", "unknown"))
+            hc_cols[1].metric("ETF flows", etf_status)
+        hc_cols[2].metric(
+            "Stablecoin v2 features",
+            str(int(stablecoin_liquidity_v2_report["feature_name"].nunique())) if not stablecoin_liquidity_v2_report.empty else "0",
+        )
+        if high_conviction_factor_leaderboard.empty:
+            st.warning("No high-conviction factor-pack leaderboard is available yet. Manual BTC dominance/ETF CSVs may be empty.")
+        else:
+            st.dataframe(
+                high_conviction_factor_leaderboard.sort_values(
+                    ["promotion_eligible", "directional_accuracy", "net_return"],
+                    ascending=[False, False, False],
+                    na_position="last",
+                )[
+                    [
+                        "candidate_feature_set",
+                        "model_name",
+                        "n_features",
+                        "n_samples",
+                        "directional_accuracy",
+                        "brier_score",
+                        "calibration_error",
+                        "net_return",
+                        "max_drawdown",
+                        "bootstrap_ci_low",
+                        "permutation_p_value",
+                        "promotion_eligible",
+                        "rejection_reason",
+                    ]
+                ].style.format(
+                    {
+                        "directional_accuracy": "{:.1%}",
+                        "brier_score": "{:.3f}",
+                        "calibration_error": "{:.3f}",
+                        "net_return": "{:.1%}",
+                        "max_drawdown": "{:.1%}",
+                        "bootstrap_ci_low": "{:.1%}",
+                        "permutation_p_value": "{:.3f}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+        if not factor_pack_promotion_audit.empty:
+            st.dataframe(
+                factor_pack_promotion_audit[
+                    [
+                        "candidate_feature_set",
+                        "model_name",
+                        "feature_count",
+                        "feature_cap_passed",
+                        "baseline_gates_passed",
+                        "bootstrap_gate_passed",
+                        "permutation_gate_passed",
+                        "regime_stability_passed",
+                        "promotion_decision",
+                        "failed_gates",
+                    ]
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+    else:
+        st.info("High-conviction BTC dominance and ETF-flow packs are BTC-first diagnostics. SOL/SPX-specific versions stay excluded until validated separately.")
 
     if selected_asset == "sol":
         st.subheader("SOL Deployability")

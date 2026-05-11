@@ -60,6 +60,14 @@ def preserve_quick_baseline(output_dir: Path, refresh: bool) -> Optional[Path]:
 def feature_group_for_feature(feature: str) -> str:
     if feature.startswith("polymarket_"):
         return "prediction_markets_only"
+    if feature.startswith("btc_dominance_"):
+        return "btc_dominance_regime"
+    if feature.startswith("stablecoin_liquidity_"):
+        return "stablecoin_liquidity_v2"
+    if feature.startswith("etf_flow_"):
+        return "etf_flows"
+    if feature.startswith("btc_liquidity_interaction_"):
+        return "btc_liquidity_interactions"
     if feature.startswith("solana_ecosystem_"):
         return "sol_ecosystem_only"
     if feature.startswith("derivatives_"):
@@ -94,6 +102,10 @@ def feature_group_columns(feature_cols: Sequence[str]) -> Dict[str, List[str]]:
         "dollar_rates_only": [],
         "risk_assets_only": [],
         "stablecoins_only": [],
+        "stablecoin_liquidity_v2": [],
+        "btc_dominance_regime": [],
+        "etf_flows": [],
+        "btc_liquidity_interactions": [],
         "sol_ecosystem_only": [],
         "onchain_only": [],
         "derivatives_only": [],
@@ -953,22 +965,44 @@ def candidate_feature_sets(feature_cols: Sequence[str], asset_id: str) -> Dict[s
     if asset_id == "btc":
         derivatives_pack = groups.get("derivatives_only", [])
         dollar_rates_cycle = list(dict.fromkeys(only("dollar_rates_only") + cycle_cols))
-        sets.update(
-            {
-                "btc_dollar_rates_cycle": dollar_rates_cycle,
-                "btc_derivatives_pack": derivatives_pack,
-                "btc_dollar_rates_cycle_plus_derivatives_pack": list(dict.fromkeys(dollar_rates_cycle + derivatives_pack)),
-                "btc_macro_liquidity": only("macro_liquidity_only", "dollar_rates_only"),
-                "btc_derivatives_v2_pack": derivatives_pack,
-                "btc_dollar_rates_cycle_plus_derivatives_v2": list(dict.fromkeys(dollar_rates_cycle + derivatives_pack)),
-                "btc_macro_liquidity_v2": only("macro_liquidity_only", "dollar_rates_only"),
-                "btc_dollar_rates_cycle_v2": list(dict.fromkeys(only("macro_liquidity_only", "dollar_rates_only") + cycle_cols)),
-                "btc_core_dollar_derivatives_cycle": list(
-                    dict.fromkeys(only("price_momentum_only", "dollar_rates_only", "derivatives_only") + cycle_cols)
-                ),
-                "btc_no_sparse_derivatives": without("derivatives_only") if len(groups.get("derivatives_only", [])) < 6 else cols,
-            }
-        )
+        stablecoin_v2 = only("stablecoins_only", "stablecoin_liquidity_v2")
+        dominance_pack = only("btc_dominance_regime")
+        etf_pack = only("etf_flows")
+        liquidity_interactions = only("btc_liquidity_interactions")
+        btc_sets = {
+            "btc_dollar_rates_cycle": dollar_rates_cycle,
+            "btc_derivatives_pack": derivatives_pack,
+            "btc_dollar_rates_cycle_plus_derivatives_pack": list(dict.fromkeys(dollar_rates_cycle + derivatives_pack)),
+            "btc_macro_liquidity": only("macro_liquidity_only", "dollar_rates_only"),
+            "btc_derivatives_v2_pack": derivatives_pack,
+            "btc_dollar_rates_cycle_plus_derivatives_v2": list(dict.fromkeys(dollar_rates_cycle + derivatives_pack)),
+            "btc_macro_liquidity_v2": only("macro_liquidity_only", "dollar_rates_only"),
+            "btc_dollar_rates_cycle_v2": list(dict.fromkeys(only("macro_liquidity_only", "dollar_rates_only") + cycle_cols)),
+            "btc_core_dollar_derivatives_cycle": list(
+                dict.fromkeys(only("price_momentum_only", "dollar_rates_only", "derivatives_only") + cycle_cols)
+            ),
+            "btc_no_sparse_derivatives": without("derivatives_only") if len(groups.get("derivatives_only", [])) < 6 else cols,
+        }
+        if dominance_pack:
+            btc_sets["btc_dominance_regime_pack"] = dominance_pack
+            btc_sets["btc_dollar_rates_cycle_plus_dominance"] = list(dict.fromkeys(dollar_rates_cycle + dominance_pack + liquidity_interactions))
+        if stablecoin_v2:
+            btc_sets["btc_stablecoin_liquidity_v2"] = stablecoin_v2
+            btc_sets["btc_dollar_rates_cycle_plus_stablecoin_v2"] = list(dict.fromkeys(dollar_rates_cycle + stablecoin_v2 + liquidity_interactions))
+        if etf_pack:
+            btc_sets["btc_etf_flow_pack"] = list(dict.fromkeys(etf_pack + liquidity_interactions))
+        if dominance_pack or stablecoin_v2 or etf_pack:
+            btc_sets["btc_core_liquidity_regime_v2"] = list(
+                dict.fromkeys(
+                    only("price_momentum_only", "dollar_rates_only", "macro_liquidity_only")
+                    + cycle_cols
+                    + stablecoin_v2
+                    + dominance_pack
+                    + etf_pack
+                    + liquidity_interactions
+                )
+            )
+        sets.update(btc_sets)
     if asset_id == "sol":
         sets.update(
             {
@@ -1977,6 +2011,12 @@ def asset_specific_candidate_names(asset_id: str) -> List[str]:
             "btc_dollar_rates_cycle_v2",
             "btc_derivatives_v2_pack",
             "btc_dollar_rates_cycle_plus_derivatives_v2",
+            "btc_dominance_regime_pack",
+            "btc_stablecoin_liquidity_v2",
+            "btc_etf_flow_pack",
+            "btc_dollar_rates_cycle_plus_dominance",
+            "btc_dollar_rates_cycle_plus_stablecoin_v2",
+            "btc_core_liquidity_regime_v2",
         ]
     if asset_id == "sol":
         return [
@@ -3549,6 +3589,225 @@ def btc_baseline_dominance_report(run_id: str, raw: pd.DataFrame, equity_curves:
                     "notes": "Uses official 30d non-overlapping equity rows; candidate feature packs are covered in btc_factor_rescue_report.",
                 }
             )
+    return pd.DataFrame(rows)
+
+
+HIGH_CONVICTION_CANDIDATES = {
+    "btc_dominance_regime_pack",
+    "btc_stablecoin_liquidity_v2",
+    "btc_etf_flow_pack",
+    "btc_dollar_rates_cycle_plus_dominance",
+    "btc_dollar_rates_cycle_plus_stablecoin_v2",
+    "btc_core_liquidity_regime_v2",
+}
+
+
+def btc_dominance_regime_report(run_id: str, raw: pd.DataFrame, feature_result, availability: pd.DataFrame) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "btc":
+        return empty_diagnostic_frame("btc_dominance_regime_report.csv")
+    status_rows = availability[availability["dataset"].astype(str).eq("btc_dominance")] if not availability.empty else pd.DataFrame()
+    status = str(status_rows.iloc[0]["status"]) if not status_rows.empty else "skipped"
+    row_count = int(status_rows.iloc[0]["rows"]) if not status_rows.empty and pd.notna(status_rows.iloc[0].get("rows")) else 0
+    first_date = str(status_rows.iloc[0].get("first_date", "")) if not status_rows.empty else ""
+    last_date = str(status_rows.iloc[0].get("last_date", "")) if not status_rows.empty else ""
+    features = feature_result.features
+    feature_cols = set(feature_result.feature_cols)
+    dominance_features = [col for col in features.columns if col.startswith("btc_dominance_")]
+    if not dominance_features:
+        return pd.DataFrame(
+            [
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "source_status": status,
+                    "rows": row_count,
+                    "first_date": first_date,
+                    "last_date": last_date,
+                    "feature_name": "btc_dominance",
+                    "latest_value": np.nan,
+                    "missing_pct": 1.0,
+                    "used_in_model": False,
+                    "regime_observation_count": 0,
+                    "notes": "Manual BTC dominance CSV is empty or unavailable; dominance regimes were not fabricated.",
+                }
+            ]
+        )
+    rows = []
+    for feature in dominance_features:
+        series = pd.to_numeric(features[feature], errors="coerce")
+        valid = series.dropna()
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "source_status": status,
+                "rows": row_count,
+                "first_date": first_date,
+                "last_date": last_date,
+                "feature_name": feature,
+                "latest_value": float(valid.iloc[-1]) if len(valid) else np.nan,
+                "missing_pct": float(1 - series.notna().mean()) if len(series) else 1.0,
+                "used_in_model": feature in feature_cols,
+                "regime_observation_count": int((series == 1).sum()) if feature.startswith("btc_dominance_regime_") else int(series.notna().sum()),
+                "notes": "Manual BTC dominance feature; release-lagged before model training.",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def btc_etf_flow_coverage(run_id: str, raw: pd.DataFrame, feature_result, availability: pd.DataFrame) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "btc":
+        return empty_diagnostic_frame("btc_etf_flow_coverage.csv")
+    status_rows = availability[availability["dataset"].astype(str).eq("spot_btc_etf_flows")] if not availability.empty else pd.DataFrame()
+    status = str(status_rows.iloc[0]["status"]) if not status_rows.empty else "skipped"
+    failure_reason = str(status_rows.iloc[0].get("failure_reason", "")) if not status_rows.empty else "Manual ETF CSV unavailable."
+    row_count = int(status_rows.iloc[0]["rows"]) if not status_rows.empty and pd.notna(status_rows.iloc[0].get("rows")) else 0
+    first_date = str(status_rows.iloc[0].get("first_date", "")) if not status_rows.empty else ""
+    last_date = str(status_rows.iloc[0].get("last_date", "")) if not status_rows.empty else ""
+    flow = pd.to_numeric(raw.get("btc_etf_net_flow_usd", pd.Series(index=raw.index, dtype=float)), errors="coerce")
+    valid = flow.dropna()
+    latest_7d = flow.rolling(7, min_periods=1).sum().dropna()
+    latest_30d = flow.rolling(30, min_periods=1).sum().dropna()
+    ibit_share = pd.to_numeric(raw.get("btc_etf_ibit_share", pd.Series(index=raw.index, dtype=float)), errors="coerce").dropna()
+    used = any(col.startswith("etf_flow_") for col in getattr(feature_result, "feature_cols", []))
+    return pd.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "source_status": status,
+                "rows": row_count,
+                "first_date": first_date,
+                "last_date": last_date,
+                "missing_pct": float(1 - flow.notna().mean()) if len(flow) else 1.0,
+                "latest_daily_net_flow_usd": float(valid.iloc[-1]) if len(valid) else np.nan,
+                "latest_7d_net_flow_usd": float(latest_7d.iloc[-1]) if len(latest_7d) else np.nan,
+                "latest_30d_net_flow_usd": float(latest_30d.iloc[-1]) if len(latest_30d) else np.nan,
+                "latest_ibit_share": float(ibit_share.iloc[-1]) if len(ibit_share) else np.nan,
+                "used_in_model": used,
+                "failure_reason": failure_reason,
+            }
+        ]
+    )
+
+
+def stablecoin_liquidity_v2_report(run_id: str, feature_result) -> pd.DataFrame:
+    features = feature_result.features
+    names = [col for col in features.columns if col.startswith("stablecoin_liquidity_") or col == "stablecoins_supply_chg_7d"]
+    if not names:
+        return empty_diagnostic_frame("stablecoin_liquidity_v2_report.csv")
+    feature_cols = set(feature_result.feature_cols)
+    rows = []
+    for feature in names:
+        series = pd.to_numeric(features[feature], errors="coerce")
+        valid = series.dropna()
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": _asset_id_from_run(run_id),
+                "feature_name": feature,
+                "latest_value": float(valid.iloc[-1]) if len(valid) else np.nan,
+                "n_samples": int(series.notna().sum()),
+                "missing_pct": float(1 - series.notna().mean()) if len(series) else 1.0,
+                "first_date": valid.index.min().date().isoformat() if len(valid) else "",
+                "last_date": valid.index.max().date().isoformat() if len(valid) else "",
+                "used_in_model": feature in feature_cols,
+                "notes": "Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def high_conviction_factor_leaderboard(run_id: str, asset_feature_sets: pd.DataFrame) -> pd.DataFrame:
+    if asset_feature_sets.empty:
+        return empty_diagnostic_frame("high_conviction_factor_leaderboard.csv")
+    frame = asset_feature_sets[
+        asset_feature_sets["candidate_feature_set"].astype(str).isin(HIGH_CONVICTION_CANDIDATES)
+        & (asset_feature_sets["horizon"] == 30)
+        & (asset_feature_sets["window_type"] == "official_monthly")
+    ].copy()
+    if frame.empty:
+        return empty_diagnostic_frame("high_conviction_factor_leaderboard.csv")
+    frame["run_id"] = run_id
+    return frame[
+        [
+            "run_id",
+            "asset_id",
+            "horizon",
+            "window_type",
+            "candidate_feature_set",
+            "model_name",
+            "n_features",
+            "n_samples",
+            "directional_accuracy",
+            "brier_score",
+            "calibration_error",
+            "net_return",
+            "max_drawdown",
+            "bootstrap_ci_low",
+            "permutation_p_value",
+            "beats_buy_hold",
+            "beats_momentum_30d",
+            "beats_momentum_90d",
+            "beats_random_baseline",
+            "promotion_eligible",
+            "reliability_label",
+            "rejection_reason",
+        ]
+    ]
+
+
+def factor_pack_promotion_audit(run_id: str, high_conviction: pd.DataFrame) -> pd.DataFrame:
+    if high_conviction.empty:
+        return empty_diagnostic_frame("factor_pack_promotion_audit.csv")
+    rows = []
+    for _, row in high_conviction.iterrows():
+        baseline_passed = all(
+            bool(row.get(col, False))
+            for col in ["beats_buy_hold", "beats_momentum_30d", "beats_momentum_90d", "beats_random_baseline"]
+        )
+        bootstrap_passed = bool(pd.notna(row.get("bootstrap_ci_low")) and float(row.get("bootstrap_ci_low")) > 0.50)
+        permutation_passed = bool(pd.notna(row.get("permutation_p_value")) and float(row.get("permutation_p_value")) <= 0.10)
+        calibration_passed = bool(pd.notna(row.get("calibration_error")) and float(row.get("calibration_error")) <= 0.15)
+        brier_passed = bool(pd.notna(row.get("brier_score")) and float(row.get("brier_score")) <= 0.30)
+        drawdown_passed = bool(pd.notna(row.get("max_drawdown")) and float(row.get("max_drawdown")) > -0.60)
+        feature_cap_passed = bool(int(row.get("n_features", 0) or 0) <= 80)
+        regime_stability_passed = "regime_stability" not in str(row.get("rejection_reason", ""))
+        checks = {
+            "feature_cap": feature_cap_passed,
+            "baselines": baseline_passed,
+            "bootstrap": bootstrap_passed,
+            "permutation": permutation_passed,
+            "regime_stability": regime_stability_passed,
+            "calibration": calibration_passed,
+            "brier": brier_passed,
+            "drawdown": drawdown_passed,
+        }
+        failed = [name for name, passed in checks.items() if not passed]
+        promoted = bool(row.get("promotion_eligible", False))
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": row.get("asset_id", _asset_id_from_run(run_id)),
+                "candidate_feature_set": row.get("candidate_feature_set", ""),
+                "model_name": row.get("model_name", ""),
+                "promotion_eligible": promoted,
+                "feature_count": int(row.get("n_features", 0) or 0),
+                "feature_cap_passed": feature_cap_passed,
+                "baseline_gates_passed": baseline_passed,
+                "bootstrap_gate_passed": bootstrap_passed,
+                "permutation_gate_passed": permutation_passed,
+                "regime_stability_passed": regime_stability_passed,
+                "calibration_gate_passed": calibration_passed,
+                "brier_gate_passed": brier_passed,
+                "drawdown_gate_passed": drawdown_passed,
+                "failed_gates": "; ".join(failed),
+                "promotion_decision": "promoted" if promoted else "not_promoted",
+                "notes": str(row.get("rejection_reason", "")) if not promoted else "Passed existing official 30d gates.",
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -5187,6 +5446,7 @@ def write_diagnostics(
     )
     if _asset_id_from_run(run_id) == "spx":
         write_schema_csv("spx_risk_off_audit.csv", spx_risk_off_frame, output_dir)
+    high_conviction_frame = high_conviction_factor_leaderboard(run_id, asset_policy["asset_feature_set_leaderboard.csv"])
     diagnostics = {
         "model_rejection_reasons.csv": model_rejection_reasons(base_outputs["backtest_summary.csv"], selected_model),
         "feature_signal_diagnostics.csv": feature_signal_frame,
@@ -5232,6 +5492,21 @@ def write_diagnostics(
             raw,
             base_outputs["equity_curves.csv"],
         ),
+        "btc_dominance_regime_report.csv": btc_dominance_regime_report(
+            run_id,
+            raw,
+            feature_result,
+            base_outputs["data_availability.csv"],
+        ),
+        "btc_etf_flow_coverage.csv": btc_etf_flow_coverage(
+            run_id,
+            raw,
+            feature_result,
+            base_outputs["data_availability.csv"],
+        ),
+        "stablecoin_liquidity_v2_report.csv": stablecoin_liquidity_v2_report(run_id, feature_result),
+        "high_conviction_factor_leaderboard.csv": high_conviction_frame,
+        "factor_pack_promotion_audit.csv": factor_pack_promotion_audit(run_id, high_conviction_frame),
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)

@@ -121,6 +121,7 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "btc_factor_rescue_report": read_diagnostic("btc_factor_rescue_report.csv"),
         "btc_baseline_dominance_report": read_diagnostic("btc_baseline_dominance_report.csv"),
         "btc_candidate_rescue_audit": read_diagnostic("btc_candidate_rescue_audit.csv"),
+        "btc_regime_filter_audit": read_diagnostic("btc_regime_filter_audit.csv"),
         "btc_dominance_regime_report": read_diagnostic("btc_dominance_regime_report.csv"),
         "btc_etf_flow_coverage": read_diagnostic("btc_etf_flow_coverage.csv"),
         "stablecoin_liquidity_v2_report": read_diagnostic("stablecoin_liquidity_v2_report.csv"),
@@ -316,6 +317,7 @@ btc_edge_failure_audit = outputs["btc_edge_failure_audit"]
 btc_factor_rescue_report = outputs["btc_factor_rescue_report"]
 btc_baseline_dominance_report = outputs["btc_baseline_dominance_report"]
 btc_candidate_rescue_audit = outputs["btc_candidate_rescue_audit"]
+btc_regime_filter_audit = outputs["btc_regime_filter_audit"]
 btc_dominance_regime_report = outputs["btc_dominance_regime_report"]
 btc_etf_flow_coverage = outputs["btc_etf_flow_coverage"]
 stablecoin_liquidity_v2_report = outputs["stablecoin_liquidity_v2_report"]
@@ -723,6 +725,68 @@ with signal_tab:
                         "permutation_p_value": "{:.3f}",
                         "active_coverage": "{:.1%}",
                         "active_hit_rate": "{:.1%}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+        st.subheader("BTC Regime Filter Audit")
+        st.caption(
+            "Regime filters are deployable only if selected from train/calibration data. "
+            "Final-test-ranked filters are diagnostic-only."
+        )
+        if btc_regime_filter_audit.empty:
+            st.warning("No precomputed BTC regime filter audit is available.")
+        else:
+            best_filter = btc_regime_filter_audit.sort_values(
+                ["promotion_eligible", "passes_active_coverage_floor", "active_hit_rate", "after_cost_return"],
+                ascending=[False, False, False, False],
+                na_position="last",
+            ).head(1)
+            if not best_filter.empty:
+                row = best_filter.iloc[0]
+                filter_cols = st.columns(6)
+                filter_cols[0].metric("Best filter", str(row["filter_name"]))
+                filter_cols[1].metric("Candidate", str(row["candidate_feature_set"]))
+                filter_cols[2].metric("Active coverage", fmt_pct(row["active_coverage"]))
+                filter_cols[3].metric("Active hit rate", fmt_pct(row["active_hit_rate"]))
+                filter_cols[4].metric("After-cost return", fmt_pct(row["after_cost_return"]))
+                filter_cols[5].metric("Decision", str(row["rescue_decision"]))
+                st.caption(f"Failed gates: {row.get('failed_gates', '')}. {row.get('rejection_reason', '')}")
+            st.dataframe(
+                btc_regime_filter_audit[
+                    [
+                        "candidate_feature_set",
+                        "filter_name",
+                        "filter_selection_basis",
+                        "leakage_check_passed",
+                        "official_sample_count",
+                        "active_signal_count",
+                        "active_coverage",
+                        "active_hit_rate",
+                        "directional_accuracy",
+                        "after_cost_return",
+                        "bootstrap_ci_low",
+                        "permutation_p_value",
+                        "regime_concentration_score",
+                        "best_regime",
+                        "promotion_eligible",
+                        "rescue_decision",
+                        "failed_gates",
+                    ]
+                ].sort_values(
+                    ["candidate_feature_set", "promotion_eligible", "active_hit_rate", "after_cost_return"],
+                    ascending=[True, False, False, False],
+                    na_position="last",
+                ).style.format(
+                    {
+                        "active_coverage": "{:.1%}",
+                        "active_hit_rate": "{:.1%}",
+                        "directional_accuracy": "{:.1%}",
+                        "after_cost_return": "{:.1%}",
+                        "bootstrap_ci_low": "{:.1%}",
+                        "permutation_p_value": "{:.3f}",
+                        "regime_concentration_score": "{:.3f}",
                     }
                 ),
                 width="stretch",

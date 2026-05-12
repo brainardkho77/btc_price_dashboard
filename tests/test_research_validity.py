@@ -44,6 +44,7 @@ from diagnostic_outputs import (
     btc_candidate_rescue_audit,
     btc_edge_failure_audit,
     btc_factor_rescue_report,
+    btc_regime_filter_audit,
     factor_pack_promotion_audit,
     btc_no_edge_drilldown,
     candidate_feature_sets,
@@ -365,6 +366,73 @@ def test_btc_candidate_rescue_audit_keeps_regime_slices_diagnostic_only():
     assert regime_rows["rescue_decision"].eq("diagnostic_only").all()
 
 
+def test_btc_regime_filter_audit_is_train_selected_and_blocks_failed_gates():
+    config = ResearchConfig(quick_initial_train_days=365)
+    raw = synthetic_research_raw(rows=900)
+    feature_result = build_features(raw, config)
+    asset_rows = []
+    for candidate in ["btc_dollar_rates_cycle_plus_stablecoin_v2", "btc_dollar_rates_cycle_plus_dominance"]:
+        asset_rows.append(
+            {
+                "candidate_feature_set": candidate,
+                "model_name": "logistic_linear",
+                "n_samples": 12,
+                "directional_accuracy": 0.55,
+                "brier_score": 0.25,
+                "calibration_error": 0.10,
+                "net_return": 0.20,
+                "max_drawdown": -0.20,
+                "bootstrap_ci_low": 0.48,
+                "permutation_p_value": 0.12,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": False,
+                "beats_random_baseline": True,
+                "promotion_eligible": False,
+                "rejection_reason": "failed_bootstrap_or_permutation_stability_check; failed_regime_stability_check",
+            }
+        )
+    audit = btc_regime_filter_audit(
+        "btc_research_test",
+        raw,
+        feature_result,
+        config,
+        pd.DataFrame(asset_rows),
+        quick=True,
+    )
+    validate_frame("btc_regime_filter_audit.csv", audit)
+    assert not audit.empty
+    assert audit["filter_selection_basis"].isin(["rolling_train_calibration_only", "unavailable_filter_input", "unavailable"]).all()
+    train_rows = audit[audit["filter_selection_basis"] == "rolling_train_calibration_only"]
+    assert not train_rows.empty
+    assert train_rows["leakage_check_passed"].eq(True).all()
+    assert not train_rows["rescue_decision"].eq("deployable").any()
+
+
+def test_btc_regime_filter_audit_missing_filter_input_blocks_deployability():
+    config = ResearchConfig(quick_initial_train_days=365)
+    raw = synthetic_research_raw(rows=900).drop(columns=["stablecoin_total_circulating_usd"])
+    feature_result = build_features(raw, config)
+    asset_rows = pd.DataFrame(
+        [
+            {
+                "candidate_feature_set": "btc_dollar_rates_cycle_plus_stablecoin_v2",
+                "model_name": "logistic_linear",
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": True,
+                "beats_random_baseline": True,
+                "promotion_eligible": False,
+            }
+        ]
+    )
+    audit = btc_regime_filter_audit("btc_research_test", raw, feature_result, config, asset_rows, quick=True)
+    stable_rows = audit[audit["filter_name"].isin(["stablecoin_expansion", "stablecoin_contraction"])]
+    assert not stable_rows.empty
+    assert stable_rows["filter_selection_basis"].isin(["unavailable_filter_input", "unavailable"]).all()
+    assert stable_rows["promotion_eligible"].eq(False).all()
+
+
 def test_target_generation_uses_future_prices_only():
     config = ResearchConfig()
     raw = synthetic_research_raw()
@@ -489,6 +557,7 @@ def test_diagnostic_schemas_include_required_outputs():
         "btc_edge_failure_audit.csv",
         "btc_factor_rescue_report.csv",
         "btc_candidate_rescue_audit.csv",
+        "btc_regime_filter_audit.csv",
         "btc_baseline_dominance_report.csv",
         "btc_dominance_regime_report.csv",
         "btc_etf_flow_coverage.csv",
@@ -522,6 +591,8 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "rescue_status" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_factor_rescue_report.csv"]
     assert "filter_selection_basis" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_candidate_rescue_audit.csv"]
     assert "final_test_ranked" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_candidate_rescue_audit.csv"]
+    assert "leakage_check_passed" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_regime_filter_audit.csv"]
+    assert "passes_active_coverage_floor" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_regime_filter_audit.csv"]
     assert "dominance_result" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_baseline_dominance_report.csv"]
     assert "source_status" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_dominance_regime_report.csv"]
     assert "latest_30d_net_flow_usd" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_etf_flow_coverage.csv"]

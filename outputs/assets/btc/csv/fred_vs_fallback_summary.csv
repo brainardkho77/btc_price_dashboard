@@ -1,2 +1,2 @@
 run_id,asset_id,fred_api_status,fallback_used,selected_model_before,selected_model_after,accuracy_before,accuracy_after,accuracy_delta,best_macro_candidate,best_macro_candidate_accuracy,promotion_changed,notes
-btc_research_20260512T102621Z,btc,worked,False,,no_valid_edge,,0.55,,btc_dollar_rates_cycle / logistic_linear,0.57,False,baseline_unavailable
+btc_research_20260512T122205Z,btc,worked,False,,no_valid_edge,,0.55,,btc_dollar_rates_cycle / logistic_linear,0.57,False,baseline_unavailable

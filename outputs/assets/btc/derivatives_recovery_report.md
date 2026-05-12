@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `btc_research_20260512T102621Z`
+- Run ID: `btc_research_20260512T122205Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`

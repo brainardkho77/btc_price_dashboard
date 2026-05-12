@@ -3851,6 +3851,376 @@ def btc_candidate_rescue_audit(
     return pd.DataFrame(rows)
 
 
+BTC_REGIME_FILTER_NAMES = (
+    "low_vol",
+    "high_vol",
+    "btc_up",
+    "btc_down",
+    "stablecoin_expansion",
+    "stablecoin_contraction",
+    "dominance_rotation_starting",
+    "dominance_btc_safe_haven",
+    "dominance_accumulation",
+    "dominance_alt_season",
+)
+
+
+def _prediction_calibration_error(preds: pd.DataFrame, bins: int = 5) -> float:
+    if preds.empty or "probability_up" not in preds or "actual_up" not in preds:
+        return np.nan
+    edges = np.linspace(0, 1, bins + 1)
+    total = 0
+    weighted_error = 0.0
+    for low, high in zip(edges[:-1], edges[1:]):
+        if high == 1:
+            mask = (preds["probability_up"] >= low) & (preds["probability_up"] <= high)
+        else:
+            mask = (preds["probability_up"] >= low) & (preds["probability_up"] < high)
+        part = preds.loc[mask]
+        if part.empty:
+            continue
+        total += len(part)
+        weighted_error += len(part) * abs(float(part["probability_up"].mean()) - float(part["actual_up"].mean()))
+    return float(weighted_error / total) if total else np.nan
+
+
+def _btc_regime_filter_masks(raw: pd.DataFrame, feature_result, dates: pd.DatetimeIndex) -> Dict[str, Optional[pd.Series]]:
+    rescue_masks = _btc_rescue_masks(raw, feature_result, dates)
+    masks: Dict[str, Optional[pd.Series]] = {
+        "low_vol": rescue_masks.get("low-vol"),
+        "high_vol": rescue_masks.get("high-vol"),
+        "btc_up": rescue_masks.get("BTC-up"),
+        "btc_down": rescue_masks.get("BTC-down"),
+        "dominance_rotation_starting": rescue_masks.get("dominance_rotation_starting"),
+        "dominance_btc_safe_haven": rescue_masks.get("dominance_btc_safe_haven"),
+        "dominance_accumulation": rescue_masks.get("dominance_accumulation"),
+        "dominance_alt_season": rescue_masks.get("dominance_alt_season"),
+    }
+    stable_expansion = None
+    if "stablecoin_liquidity_expansion_flag" in feature_result.features:
+        stable_expansion = feature_result.features["stablecoin_liquidity_expansion_flag"].reindex(dates).fillna(0).astype(float) > 0.5
+    elif "stablecoins_supply_chg_30d" in feature_result.features:
+        stable_expansion = feature_result.features["stablecoins_supply_chg_30d"].reindex(dates).astype(float) > 0
+    masks["stablecoin_expansion"] = stable_expansion
+    masks["stablecoin_contraction"] = (~stable_expansion) if stable_expansion is not None else None
+    return {name: (mask.reindex(dates).fillna(False).astype(bool) if mask is not None else None) for name, mask in masks.items()}
+
+
+def _rolling_train_selected_filter_predictions(
+    preds: pd.DataFrame,
+    mask: pd.Series,
+    config: ResearchConfig,
+) -> Tuple[pd.DataFrame, str, bool]:
+    """Use only prior official OOS rows to decide if a regime filter is active for each test date."""
+    filtered = preds.copy()
+    filtered["policy_position"] = 0.0
+    filtered["regime_filter_selected"] = False
+    filtered["regime_filter_match"] = mask.reindex(filtered.index).fillna(False).astype(bool)
+    min_history = 8
+    selection_dates = []
+    leakage_ok = True
+    for i, date in enumerate(filtered.index):
+        prior = preds.iloc[:i].copy()
+        prior_mask = mask.reindex(prior.index).fillna(False).astype(bool)
+        prior_part = prior.loc[prior_mask]
+        if len(prior_part) < min_history:
+            continue
+        prior_accuracy = float((prior_part["predicted_up"].astype(int) == prior_part["actual_up"].astype(int)).mean())
+        prior_return, _ = _return_drawdown_from_policy(prior_part, config.transaction_cost_bps)
+        selected = bool(pd.notna(prior_return) and prior_accuracy >= 0.55 and prior_return > 0)
+        if selected and bool(filtered.at[date, "regime_filter_match"]):
+            filtered.at[date, "regime_filter_selected"] = True
+            filtered.at[date, "policy_position"] = float(preds.at[date, "policy_position"]) if "policy_position" in preds else 0.0
+            selection_dates.append(prior_part.index.max())
+            if not prior_part.index.max() < date:
+                leakage_ok = False
+    selection_window_end = str(max(selection_dates).date()) if selection_dates else ""
+    return filtered, selection_window_end, leakage_ok
+
+
+def _filtered_prediction_metrics(filtered: pd.DataFrame, config: ResearchConfig) -> dict:
+    if filtered.empty:
+        return {
+            "active_signal_count": 0,
+            "active_coverage": 0.0,
+            "active_hit_rate": np.nan,
+            "directional_accuracy": np.nan,
+            "brier_score": np.nan,
+            "calibration_error": np.nan,
+            "after_cost_return": np.nan,
+            "max_drawdown": np.nan,
+            "bootstrap_ci_low": np.nan,
+            "permutation_p_value": np.nan,
+        }
+    active = filtered[filtered["policy_position"].astype(float) > 0].copy()
+    net_return, drawdown = _return_drawdown_from_policy(filtered, config.transaction_cost_bps)
+    if active.empty:
+        ci_low, _, p_value = np.nan, np.nan, np.nan
+        accuracy = np.nan
+        brier = np.nan
+        calibration = np.nan
+        hit_rate = np.nan
+    else:
+        ci_low, _, p_value = _bootstrap_signal_quality(active, config, quick=False)
+        actual = active["actual_up"].astype(int)
+        pred = active["predicted_up"].astype(int)
+        accuracy = float((pred == actual).mean())
+        brier = float(np.mean((active["probability_up"].astype(float) - actual) ** 2))
+        calibration = _prediction_calibration_error(active)
+        hit_rate = float(actual.mean())
+    return {
+        "active_signal_count": int(len(active)),
+        "active_coverage": float(len(active) / len(filtered)) if len(filtered) else 0.0,
+        "active_hit_rate": hit_rate,
+        "directional_accuracy": accuracy,
+        "brier_score": brier,
+        "calibration_error": calibration,
+        "after_cost_return": net_return,
+        "max_drawdown": drawdown,
+        "bootstrap_ci_low": ci_low,
+        "permutation_p_value": p_value,
+    }
+
+
+def btc_regime_filter_audit(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+    asset_feature_sets: pd.DataFrame,
+    *,
+    quick: bool,
+) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "btc":
+        return empty_diagnostic_frame("btc_regime_filter_audit.csv")
+    candidate_sets = candidate_feature_sets(feature_result.feature_cols, asset_id)
+    lookup = (
+        asset_feature_sets.set_index(["candidate_feature_set", "model_name"], drop=False)
+        if not asset_feature_sets.empty
+        else pd.DataFrame()
+    )
+    rows = []
+    generated_at = pd.Timestamp.utcnow().isoformat()
+    for candidate_name in BTC_CANDIDATE_RESCUE_CANDIDATES:
+        model_name = "logistic_linear"
+        candidate_cols = candidate_sets.get(candidate_name, [])
+        key = (candidate_name, model_name)
+        summary_row = lookup.loc[key] if isinstance(lookup, pd.DataFrame) and key in lookup.index else pd.Series(dtype=object)
+        predictions, _, _, _ = _candidate_predictions_and_summaries(
+            run_id,
+            raw,
+            feature_result,
+            candidate_name,
+            candidate_cols,
+            config,
+            quick=quick,
+            model_names_override=[model_name],
+        )
+        preds = predictions.get(model_name, pd.DataFrame())
+        if preds.empty:
+            for filter_name in BTC_REGIME_FILTER_NAMES:
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "asset_id": asset_id,
+                        "candidate_feature_set": candidate_name,
+                        "model_name": model_name,
+                        "filter_name": filter_name,
+                        "filter_selection_basis": "unavailable",
+                        "selection_window_end": "",
+                        "test_window_start": "",
+                        "test_window_end": "",
+                        "leakage_check_passed": False,
+                        "official_sample_count": 0,
+                        "active_signal_count": 0,
+                        "active_coverage": 0.0,
+                        "active_hit_rate": np.nan,
+                        "directional_accuracy": np.nan,
+                        "brier_score": np.nan,
+                        "calibration_error": np.nan,
+                        "after_cost_return": np.nan,
+                        "max_drawdown": np.nan,
+                        "bootstrap_ci_low": np.nan,
+                        "permutation_p_value": np.nan,
+                        "regime_concentration_score": np.nan,
+                        "best_regime": "",
+                        "beats_buy_hold": False,
+                        "beats_momentum_30d": False,
+                        "beats_momentum_90d": False,
+                        "beats_random_baseline": False,
+                        "passes_transaction_cost_check": False,
+                        "passes_active_coverage_floor": False,
+                        "passes_bootstrap_gate": False,
+                        "passes_permutation_gate": False,
+                        "passes_regime_stability_gate": False,
+                        "promotion_eligible": False,
+                        "rescue_decision": "not_deployable",
+                        "failed_gates": "missing_candidate_predictions",
+                        "rejection_reason": "Candidate predictions are unavailable; no regime-filter result was inferred.",
+                        "generated_at": generated_at,
+                    }
+                )
+            continue
+        masks = _btc_regime_filter_masks(raw, feature_result, pd.DatetimeIndex(preds.index))
+        for filter_name in BTC_REGIME_FILTER_NAMES:
+            mask = masks.get(filter_name)
+            if mask is None:
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "asset_id": asset_id,
+                        "candidate_feature_set": candidate_name,
+                        "model_name": model_name,
+                        "filter_name": filter_name,
+                        "filter_selection_basis": "unavailable_filter_input",
+                        "selection_window_end": "",
+                        "test_window_start": str(preds.index.min().date()),
+                        "test_window_end": str(preds.index.max().date()),
+                        "leakage_check_passed": False,
+                        "official_sample_count": int(len(preds)),
+                        "active_signal_count": 0,
+                        "active_coverage": 0.0,
+                        "active_hit_rate": np.nan,
+                        "directional_accuracy": np.nan,
+                        "brier_score": np.nan,
+                        "calibration_error": np.nan,
+                        "after_cost_return": np.nan,
+                        "max_drawdown": np.nan,
+                        "bootstrap_ci_low": np.nan,
+                        "permutation_p_value": np.nan,
+                        "regime_concentration_score": np.nan,
+                        "best_regime": "",
+                        "beats_buy_hold": False,
+                        "beats_momentum_30d": False,
+                        "beats_momentum_90d": False,
+                        "beats_random_baseline": False,
+                        "passes_transaction_cost_check": False,
+                        "passes_active_coverage_floor": False,
+                        "passes_bootstrap_gate": False,
+                        "passes_permutation_gate": False,
+                        "passes_regime_stability_gate": False,
+                        "promotion_eligible": False,
+                        "rescue_decision": "not_deployable",
+                        "failed_gates": "unavailable_filter_input",
+                        "rejection_reason": "Required regime-filter input is unavailable; result was not inferred.",
+                        "generated_at": generated_at,
+                    }
+                )
+                continue
+            filtered, selection_end, leakage_ok = _rolling_train_selected_filter_predictions(preds, mask, config)
+            metrics = _filtered_prediction_metrics(filtered, config)
+            active_preds = filtered[filtered["policy_position"].astype(float) > 0].copy()
+            concentration_score, best_regime, concentration_pass = (
+                _regime_concentration(active_preds, _btc_rescue_masks(raw, feature_result, pd.DatetimeIndex(active_preds.index)), config)
+                if not active_preds.empty
+                else (np.nan, "", False)
+            )
+            active_floor = active_signal_floor(len(filtered))
+            passes_active = metrics["active_signal_count"] >= active_floor
+            passes_bootstrap = bool(pd.notna(metrics["bootstrap_ci_low"]) and metrics["bootstrap_ci_low"] > 0.50)
+            passes_permutation = bool(pd.notna(metrics["permutation_p_value"]) and metrics["permutation_p_value"] <= 0.10)
+            passes_transaction = bool(pd.notna(metrics["after_cost_return"]) and metrics["after_cost_return"] > 0)
+            beats_buy_hold = bool(summary_row.get("beats_buy_hold", False))
+            beats_m30 = bool(summary_row.get("beats_momentum_30d", False))
+            beats_m90 = bool(summary_row.get("beats_momentum_90d", False))
+            beats_random = bool(summary_row.get("beats_random_baseline", False))
+            brier_ok = not (
+                pd.notna(metrics["brier_score"])
+                and pd.notna(summary_row.get("brier_score", np.nan))
+                and float(metrics["brier_score"]) > float(summary_row.get("brier_score")) + MATERIAL_BRIER_WORSENING
+            )
+            calibration_ok = not (
+                pd.notna(metrics["calibration_error"])
+                and pd.notna(summary_row.get("calibration_error", np.nan))
+                and float(metrics["calibration_error"]) > float(summary_row.get("calibration_error")) + MATERIAL_CALIBRATION_WORSENING
+            )
+            drawdown_ok = not (
+                pd.notna(metrics["max_drawdown"])
+                and pd.notna(summary_row.get("max_drawdown", np.nan))
+                and float(metrics["max_drawdown"]) < float(summary_row.get("max_drawdown")) - MATERIAL_DRAWDOWN_WORSENING
+            )
+            failed = []
+            if not leakage_ok:
+                failed.append("leakage_check")
+            if not passes_active:
+                failed.append("active_coverage_floor")
+            if not beats_buy_hold:
+                failed.append("buy_hold")
+            if not beats_m30:
+                failed.append("momentum_30d")
+            if not beats_m90:
+                failed.append("momentum_90d")
+            if not beats_random:
+                failed.append("random_baseline")
+            if not passes_transaction:
+                failed.append("transaction_cost_check")
+            if not passes_bootstrap:
+                failed.append("bootstrap_lower_bound")
+            if not passes_permutation:
+                failed.append("permutation_p_value")
+            if not concentration_pass:
+                failed.append("regime_stability")
+            if not brier_ok:
+                failed.append("material_brier_worsening")
+            if not calibration_ok:
+                failed.append("material_calibration_worsening")
+            if not drawdown_ok:
+                failed.append("material_drawdown_worsening")
+            promotion_eligible = bool(not failed)
+            if promotion_eligible:
+                decision = "deployable"
+                reason = "All train-selected regime-filter promotion gates passed."
+            elif not passes_active or not passes_transaction or not concentration_pass:
+                decision = "not_deployable"
+                reason = "Filtered policy failed active-coverage, after-cost, or regime-stability requirements."
+            else:
+                decision = "diagnostic_only"
+                reason = "Filtered policy is interesting but failed one or more statistical promotion gates."
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "candidate_feature_set": candidate_name,
+                    "model_name": model_name,
+                    "filter_name": filter_name,
+                    "filter_selection_basis": "rolling_train_calibration_only",
+                    "selection_window_end": selection_end,
+                    "test_window_start": str(preds.index.min().date()),
+                    "test_window_end": str(preds.index.max().date()),
+                    "leakage_check_passed": bool(leakage_ok),
+                    "official_sample_count": int(len(filtered)),
+                    "active_signal_count": metrics["active_signal_count"],
+                    "active_coverage": metrics["active_coverage"],
+                    "active_hit_rate": metrics["active_hit_rate"],
+                    "directional_accuracy": metrics["directional_accuracy"],
+                    "brier_score": metrics["brier_score"],
+                    "calibration_error": metrics["calibration_error"],
+                    "after_cost_return": metrics["after_cost_return"],
+                    "max_drawdown": metrics["max_drawdown"],
+                    "bootstrap_ci_low": metrics["bootstrap_ci_low"],
+                    "permutation_p_value": metrics["permutation_p_value"],
+                    "regime_concentration_score": concentration_score,
+                    "best_regime": best_regime,
+                    "beats_buy_hold": beats_buy_hold,
+                    "beats_momentum_30d": beats_m30,
+                    "beats_momentum_90d": beats_m90,
+                    "beats_random_baseline": beats_random,
+                    "passes_transaction_cost_check": passes_transaction,
+                    "passes_active_coverage_floor": passes_active,
+                    "passes_bootstrap_gate": passes_bootstrap,
+                    "passes_permutation_gate": passes_permutation,
+                    "passes_regime_stability_gate": bool(concentration_pass),
+                    "promotion_eligible": promotion_eligible,
+                    "rescue_decision": decision,
+                    "failed_gates": "; ".join(dict.fromkeys(failed)),
+                    "rejection_reason": reason,
+                    "generated_at": generated_at,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def btc_dominance_regime_report(run_id: str, raw: pd.DataFrame, feature_result, availability: pd.DataFrame) -> pd.DataFrame:
     asset_id = _asset_id_from_run(run_id)
     if asset_id != "btc":
@@ -5704,6 +6074,14 @@ def write_diagnostics(
         asset_policy["asset_feature_set_leaderboard.csv"],
         quick=quick,
     )
+    btc_regime_filter_frame = btc_regime_filter_audit(
+        run_id,
+        raw,
+        feature_result,
+        config,
+        asset_policy["asset_feature_set_leaderboard.csv"],
+        quick=quick,
+    )
     diagnostics = {
         "model_rejection_reasons.csv": model_rejection_reasons(base_outputs["backtest_summary.csv"], selected_model),
         "feature_signal_diagnostics.csv": feature_signal_frame,
@@ -5765,6 +6143,7 @@ def write_diagnostics(
         "high_conviction_factor_leaderboard.csv": high_conviction_frame,
         "factor_pack_promotion_audit.csv": factor_pack_promotion_audit(run_id, high_conviction_frame),
         "btc_candidate_rescue_audit.csv": btc_rescue_audit_frame,
+        "btc_regime_filter_audit.csv": btc_regime_filter_frame,
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)

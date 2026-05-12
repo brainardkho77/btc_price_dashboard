@@ -1,7 +1,7 @@
 run_id,asset_id,feature_name,latest_value,n_samples,missing_pct,first_date,last_date,used_in_model,notes
-sol_research_20260512T105507Z,sol,stablecoins_supply_chg_7d,0.005055655693134042,2216,0.003597122302158251,2020-04-18,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
-sol_research_20260512T105507Z,sol,stablecoin_liquidity_supply_to_btc_market_cap,,0,1.0,,,False,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
-sol_research_20260512T105507Z,sol,stablecoin_liquidity_btc_market_cap_to_supply,,0,1.0,,,False,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
-sol_research_20260512T105507Z,sol,stablecoin_liquidity_supply_to_btc_market_cap_z_365d,,0,1.0,,,False,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
-sol_research_20260512T105507Z,sol,stablecoin_liquidity_impulse_30d,0.012806625616867962,2193,0.013938848920863278,2020-05-11,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
-sol_research_20260512T105507Z,sol,stablecoin_liquidity_expansion_flag,1.0,2224,0.0,2020-04-10,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+sol_research_20260512T125045Z,sol,stablecoins_supply_chg_7d,0.005055655693134042,2216,0.003597122302158251,2020-04-18,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+sol_research_20260512T125045Z,sol,stablecoin_liquidity_supply_to_btc_market_cap,,0,1.0,,,False,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+sol_research_20260512T125045Z,sol,stablecoin_liquidity_btc_market_cap_to_supply,,0,1.0,,,False,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+sol_research_20260512T125045Z,sol,stablecoin_liquidity_supply_to_btc_market_cap_z_365d,,0,1.0,,,False,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+sol_research_20260512T125045Z,sol,stablecoin_liquidity_impulse_30d,0.012806625616867962,2193,0.013938848920863278,2020-05-11,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+sol_research_20260512T125045Z,sol,stablecoin_liquidity_expansion_flag,1.0,2224,0.0,2020-04-10,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.

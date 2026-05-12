@@ -3601,6 +3601,255 @@ HIGH_CONVICTION_CANDIDATES = {
     "btc_core_liquidity_regime_v2",
 }
 
+BTC_CANDIDATE_RESCUE_CANDIDATES = (
+    "btc_dollar_rates_cycle_plus_stablecoin_v2",
+    "btc_dollar_rates_cycle_plus_dominance",
+)
+
+
+def _return_drawdown_from_policy(preds: pd.DataFrame, transaction_cost_bps: float) -> Tuple[float, float]:
+    if preds.empty:
+        return np.nan, np.nan
+    frame = _policy_returns_for_predictions(preds, transaction_cost_bps)
+    if frame.empty or "policy_equity" not in frame:
+        return np.nan, np.nan
+    return float(frame["policy_equity"].iloc[-1] - 1), float((frame["policy_equity"] / frame["policy_equity"].cummax() - 1).min())
+
+
+def _candidate_slice_metrics(preds: pd.DataFrame, mask: pd.Series, config: ResearchConfig) -> dict:
+    if preds.empty or mask.empty:
+        return {
+            "n_samples": 0,
+            "directional_accuracy": np.nan,
+            "after_cost_return": np.nan,
+            "max_drawdown": np.nan,
+            "active_signal_count": 0,
+            "active_coverage": 0.0,
+            "active_hit_rate": np.nan,
+        }
+    aligned = mask.reindex(preds.index).fillna(False).astype(bool)
+    part = preds.loc[aligned].copy()
+    if part.empty:
+        return {
+            "n_samples": 0,
+            "directional_accuracy": np.nan,
+            "after_cost_return": np.nan,
+            "max_drawdown": np.nan,
+            "active_signal_count": 0,
+            "active_coverage": 0.0,
+            "active_hit_rate": np.nan,
+        }
+    accuracy = float((part["predicted_up"].astype(int) == part["actual_up"].astype(int)).mean())
+    net_return, drawdown = _return_drawdown_from_policy(part, config.transaction_cost_bps)
+    active = part[part.get("policy_position", pd.Series(0.0, index=part.index)).astype(float) > 0]
+    active_count = int(len(active))
+    active_hit = float(active["actual_up"].astype(int).mean()) if active_count else np.nan
+    return {
+        "n_samples": int(len(part)),
+        "directional_accuracy": accuracy,
+        "after_cost_return": net_return,
+        "max_drawdown": drawdown,
+        "active_signal_count": active_count,
+        "active_coverage": float(active_count / len(part)) if len(part) else 0.0,
+        "active_hit_rate": active_hit,
+    }
+
+
+def _btc_rescue_masks(raw: pd.DataFrame, feature_result, dates: pd.DatetimeIndex) -> Dict[str, pd.Series]:
+    masks: Dict[str, pd.Series] = {}
+    period_masks = _period_slice_masks(raw, dates)
+    for name in ["2021-2023", "2024-present", "high-vol", "low-vol", "BTC-up", "BTC-down"]:
+        if name in period_masks:
+            masks[name] = period_masks[name].reindex(dates).fillna(False)
+    two_year = pd.DataFrame(index=dates)
+    two_year["2020-2021"] = (dates >= pd.Timestamp("2020-01-01")) & (dates <= pd.Timestamp("2021-12-31"))
+    two_year["2022-2023"] = (dates >= pd.Timestamp("2022-01-01")) & (dates <= pd.Timestamp("2023-12-31"))
+    for col in two_year:
+        masks[col] = two_year[col]
+    for feature in [c for c in feature_result.features.columns if c.startswith("btc_dominance_regime_")]:
+        name = feature.replace("btc_dominance_regime_", "dominance_")
+        masks[name] = feature_result.features[feature].reindex(dates).fillna(0).astype(float) > 0.5
+    return masks
+
+
+def _regime_concentration(preds: pd.DataFrame, masks: Dict[str, pd.Series], config: ResearchConfig) -> Tuple[float, str, bool]:
+    period_names = ["2020-2021", "2022-2023", "2024-present"]
+    returns = []
+    for name in period_names:
+        metrics = _candidate_slice_metrics(preds, masks.get(name, pd.Series(False, index=preds.index)), config)
+        returns.append((name, metrics["after_cost_return"], metrics["directional_accuracy"], metrics["n_samples"]))
+    positive = [(name, ret) for name, ret, acc, n in returns if n >= 8 and pd.notna(ret) and ret > 0 and pd.notna(acc) and acc >= 0.55]
+    best = max(returns, key=lambda row: (-np.inf if pd.isna(row[1]) else row[1]))[0] if returns else ""
+    if not positive:
+        return 1.0, best, False
+    total = sum(abs(ret) for _, ret in positive)
+    score = max(abs(ret) for _, ret in positive) / total if total else 1.0
+    return float(score), best, bool(len(positive) >= 2 and score <= 0.80)
+
+
+def btc_candidate_rescue_audit(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+    asset_feature_sets: pd.DataFrame,
+    *,
+    quick: bool,
+) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "btc":
+        return empty_diagnostic_frame("btc_candidate_rescue_audit.csv")
+    candidate_sets = candidate_feature_sets(feature_result.feature_cols, asset_id)
+    rows = []
+    lookup = (
+        asset_feature_sets.set_index(["candidate_feature_set", "model_name"], drop=False)
+        if not asset_feature_sets.empty
+        else pd.DataFrame()
+    )
+    for candidate_name in BTC_CANDIDATE_RESCUE_CANDIDATES:
+        model_name = "logistic_linear"
+        candidate_cols = candidate_sets.get(candidate_name, [])
+        key = (candidate_name, model_name)
+        summary_row = lookup.loc[key] if isinstance(lookup, pd.DataFrame) and key in lookup.index else pd.Series(dtype=object)
+        predictions, summaries, _, _ = _candidate_predictions_and_summaries(
+            run_id,
+            raw,
+            feature_result,
+            candidate_name,
+            candidate_cols,
+            config,
+            quick=quick,
+            model_names_override=[model_name],
+        )
+        preds = predictions.get(model_name, pd.DataFrame())
+        ci_low, _, p_value = _bootstrap_signal_quality(preds, config, quick=quick)
+        masks = _btc_rescue_masks(raw, feature_result, pd.DatetimeIndex(preds.index)) if not preds.empty else {}
+        concentration_score, best_regime, concentration_pass = _regime_concentration(preds, masks, config) if not preds.empty else (np.nan, "", False)
+        base_failed = []
+        if not bool(summary_row.get("beats_buy_hold", False)):
+            base_failed.append("buy_hold")
+        if not bool(summary_row.get("beats_momentum_30d", False)):
+            base_failed.append("momentum_30d")
+        if not bool(summary_row.get("beats_momentum_90d", False)):
+            base_failed.append("momentum_90d")
+        if not bool(summary_row.get("beats_random_baseline", False)):
+            base_failed.append("random_baseline")
+        if not (pd.notna(ci_low) and ci_low > 0.50):
+            base_failed.append("bootstrap_lower_bound")
+        if not (pd.notna(p_value) and p_value <= 0.10):
+            base_failed.append("permutation_p_value")
+        if not concentration_pass:
+            base_failed.append("regime_concentration")
+        if not bool(summary_row.get("promotion_eligible", False)):
+            base_failed.append("official_promotion_gate")
+        signal_metrics = _candidate_slice_metrics(preds, pd.Series(True, index=preds.index), config)
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "candidate_feature_set": candidate_name,
+                "model_name": model_name,
+                "audit_scope": "overall_candidate",
+                "regime_name": "full_period",
+                "n_samples": int(summary_row.get("n_samples", signal_metrics["n_samples"]) or 0),
+                "directional_accuracy": summary_row.get("directional_accuracy", np.nan),
+                "brier_score": summary_row.get("brier_score", np.nan),
+                "calibration_error": summary_row.get("calibration_error", np.nan),
+                "after_cost_return": summary_row.get("net_return", signal_metrics["after_cost_return"]),
+                "max_drawdown": summary_row.get("max_drawdown", signal_metrics["max_drawdown"]),
+                "bootstrap_ci_low": summary_row.get("bootstrap_ci_low", ci_low),
+                "permutation_p_value": summary_row.get("permutation_p_value", p_value),
+                "active_signal_count": signal_metrics["active_signal_count"],
+                "active_coverage": signal_metrics["active_coverage"],
+                "active_hit_rate": signal_metrics["active_hit_rate"],
+                "train_selected_filter": "none",
+                "filter_selection_basis": "not_filtered",
+                "final_test_ranked": False,
+                "regime_concentration_score": concentration_score,
+                "best_regime": best_regime,
+                "promotion_eligible": bool(summary_row.get("promotion_eligible", False)),
+                "rescue_decision": "deployable" if bool(summary_row.get("promotion_eligible", False)) and not base_failed else "diagnostic_only",
+                "failed_gates": "; ".join(dict.fromkeys(base_failed)),
+                "rejection_reason": summary_row.get("rejection_reason", ""),
+                "notes": "Official candidate audit; does not change selected_model.",
+            }
+        )
+        for regime_name, mask in masks.items():
+            metrics = _candidate_slice_metrics(preds, mask, config)
+            if metrics["n_samples"] == 0:
+                continue
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "asset_id": asset_id,
+                    "candidate_feature_set": candidate_name,
+                    "model_name": model_name,
+                    "audit_scope": "regime_slice",
+                    "regime_name": regime_name,
+                    "n_samples": metrics["n_samples"],
+                    "directional_accuracy": metrics["directional_accuracy"],
+                    "brier_score": np.nan,
+                    "calibration_error": np.nan,
+                    "after_cost_return": metrics["after_cost_return"],
+                    "max_drawdown": metrics["max_drawdown"],
+                    "bootstrap_ci_low": np.nan,
+                    "permutation_p_value": np.nan,
+                    "active_signal_count": metrics["active_signal_count"],
+                    "active_coverage": metrics["active_coverage"],
+                    "active_hit_rate": metrics["active_hit_rate"],
+                    "train_selected_filter": regime_name,
+                    "filter_selection_basis": "diagnostic_slice_evaluation",
+                    "final_test_ranked": True,
+                    "regime_concentration_score": concentration_score,
+                    "best_regime": best_regime,
+                    "promotion_eligible": False,
+                    "rescue_decision": "diagnostic_only",
+                    "failed_gates": "final_test_ranked; not_train_selected_filter",
+                    "rejection_reason": "Regime slice is diagnostic because it is evaluated on final out-of-sample rows and cannot select a deployable filter.",
+                    "notes": "Risk/regime slice used to locate instability, not to promote a model.",
+                }
+            )
+        policy_row = signal_policy_report_row(run_id, asset_id, 30, "official_monthly", candidate_name, model_name, preds, config, quick=quick)
+        policy_failed = []
+        if not bool(policy_row.get("valid_signal_policy", False)):
+            policy_failed.append("invalid_signal_policy")
+        if int(policy_row.get("active_signal_count", 0) or 0) < active_signal_floor(int(policy_row.get("n_samples", 0) or 0)):
+            policy_failed.append("below_active_signal_floor")
+        if not bool(policy_row.get("promoted_signal_policy", False)):
+            policy_failed.append("signal_policy_not_promoted")
+        rows.append(
+            {
+                "run_id": run_id,
+                "asset_id": asset_id,
+                "candidate_feature_set": candidate_name,
+                "model_name": model_name,
+                "audit_scope": "signal_policy_rescue",
+                "regime_name": "train_calibration_policy",
+                "n_samples": int(policy_row.get("n_samples", 0) or 0),
+                "directional_accuracy": np.nan,
+                "brier_score": np.nan,
+                "calibration_error": np.nan,
+                "after_cost_return": policy_row.get("after_cost_return", np.nan),
+                "max_drawdown": policy_row.get("max_drawdown", np.nan),
+                "bootstrap_ci_low": policy_row.get("bootstrap_ci_low", np.nan),
+                "permutation_p_value": policy_row.get("permutation_p_value", np.nan),
+                "active_signal_count": int(policy_row.get("active_signal_count", 0) or 0),
+                "active_coverage": policy_row.get("active_coverage", np.nan),
+                "active_hit_rate": policy_row.get("active_hit_rate", np.nan),
+                "train_selected_filter": "signal_policy_threshold",
+                "filter_selection_basis": "train_calibration_only",
+                "final_test_ranked": False,
+                "regime_concentration_score": concentration_score,
+                "best_regime": best_regime,
+                "promotion_eligible": False,
+                "rescue_decision": "diagnostic_only",
+                "failed_gates": "; ".join(dict.fromkeys(policy_failed)),
+                "rejection_reason": policy_row.get("rejection_reason", ""),
+                "notes": "Signal policy may inform interpretation only; it cannot change selected_model.",
+            }
+        )
+    return pd.DataFrame(rows)
+
 
 def btc_dominance_regime_report(run_id: str, raw: pd.DataFrame, feature_result, availability: pd.DataFrame) -> pd.DataFrame:
     asset_id = _asset_id_from_run(run_id)
@@ -5447,6 +5696,14 @@ def write_diagnostics(
     if _asset_id_from_run(run_id) == "spx":
         write_schema_csv("spx_risk_off_audit.csv", spx_risk_off_frame, output_dir)
     high_conviction_frame = high_conviction_factor_leaderboard(run_id, asset_policy["asset_feature_set_leaderboard.csv"])
+    btc_rescue_audit_frame = btc_candidate_rescue_audit(
+        run_id,
+        raw,
+        feature_result,
+        config,
+        asset_policy["asset_feature_set_leaderboard.csv"],
+        quick=quick,
+    )
     diagnostics = {
         "model_rejection_reasons.csv": model_rejection_reasons(base_outputs["backtest_summary.csv"], selected_model),
         "feature_signal_diagnostics.csv": feature_signal_frame,
@@ -5507,6 +5764,7 @@ def write_diagnostics(
         "stablecoin_liquidity_v2_report.csv": stablecoin_liquidity_v2_report(run_id, feature_result),
         "high_conviction_factor_leaderboard.csv": high_conviction_frame,
         "factor_pack_promotion_audit.csv": factor_pack_promotion_audit(run_id, high_conviction_frame),
+        "btc_candidate_rescue_audit.csv": btc_rescue_audit_frame,
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)

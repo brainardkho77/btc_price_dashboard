@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `spx_research_20260512T090323Z`
+- Full refresh run ID: `spx_research_20260512T110524Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -23,12 +23,12 @@ Validation gates failed by ML model:
 ## Feature Group Findings
 - `dollar_rates_only` / `logistic_linear`: samples `99`, accuracy `68.7%`, net return `212.0%`, reliability `Medium confidence`
 - `price_momentum_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
-- `stablecoin_liquidity_v2` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 - `btc_dominance_regime` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
-- `dollar_rates_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 - `etf_flows` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
-- `risk_assets_only` / `logistic_linear`: samples `99`, accuracy `67.7%`, net return `216.9%`, reliability `Low confidence`
+- `dollar_rates_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 - `btc_liquidity_interactions` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
+- `risk_assets_only` / `logistic_linear`: samples `99`, accuracy `67.7%`, net return `216.9%`, reliability `Low confidence`
+- `stablecoins_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 - `sol_ecosystem_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 - `onchain_only` / `buy_hold_direction`: samples `99`, accuracy `67.7%`, net return `198.9%`, reliability `Low confidence`
 

@@ -120,6 +120,7 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
         "btc_edge_failure_audit": read_diagnostic("btc_edge_failure_audit.csv"),
         "btc_factor_rescue_report": read_diagnostic("btc_factor_rescue_report.csv"),
         "btc_baseline_dominance_report": read_diagnostic("btc_baseline_dominance_report.csv"),
+        "btc_candidate_rescue_audit": read_diagnostic("btc_candidate_rescue_audit.csv"),
         "btc_dominance_regime_report": read_diagnostic("btc_dominance_regime_report.csv"),
         "btc_etf_flow_coverage": read_diagnostic("btc_etf_flow_coverage.csv"),
         "stablecoin_liquidity_v2_report": read_diagnostic("stablecoin_liquidity_v2_report.csv"),
@@ -314,6 +315,7 @@ btc_no_edge_drilldown_frame = outputs["btc_no_edge_drilldown"]
 btc_edge_failure_audit = outputs["btc_edge_failure_audit"]
 btc_factor_rescue_report = outputs["btc_factor_rescue_report"]
 btc_baseline_dominance_report = outputs["btc_baseline_dominance_report"]
+btc_candidate_rescue_audit = outputs["btc_candidate_rescue_audit"]
 btc_dominance_regime_report = outputs["btc_dominance_regime_report"]
 btc_etf_flow_coverage = outputs["btc_etf_flow_coverage"]
 stablecoin_liquidity_v2_report = outputs["stablecoin_liquidity_v2_report"]
@@ -669,6 +671,65 @@ with signal_tab:
                 width="stretch",
                 hide_index=True,
             )
+        st.subheader("BTC Candidate Rescue")
+        if btc_candidate_rescue_audit.empty:
+            st.warning("No precomputed BTC candidate rescue audit is available.")
+        else:
+            overall_rescue = btc_candidate_rescue_audit[btc_candidate_rescue_audit["audit_scope"] == "overall_candidate"].copy()
+            best_rescue = overall_rescue.sort_values(
+                ["directional_accuracy", "after_cost_return"],
+                ascending=[False, False],
+                na_position="last",
+            ).head(1)
+            if not best_rescue.empty:
+                row = best_rescue.iloc[0]
+                rescue_cols = st.columns(5)
+                rescue_cols[0].metric("Best candidate", str(row["candidate_feature_set"]))
+                rescue_cols[1].metric("Accuracy", fmt_pct(row["directional_accuracy"]))
+                rescue_cols[2].metric("After-cost return", fmt_pct(row["after_cost_return"]))
+                rescue_cols[3].metric("Best regime", str(row.get("best_regime", "n/a")))
+                rescue_cols[4].metric("Decision", str(row.get("rescue_decision", "diagnostic_only")))
+                st.caption(f"Main failed gates: {row.get('failed_gates', '')}. {row.get('notes', '')}")
+            st.dataframe(
+                btc_candidate_rescue_audit[
+                    [
+                        "candidate_feature_set",
+                        "audit_scope",
+                        "regime_name",
+                        "n_samples",
+                        "directional_accuracy",
+                        "after_cost_return",
+                        "max_drawdown",
+                        "bootstrap_ci_low",
+                        "permutation_p_value",
+                        "active_signal_count",
+                        "active_coverage",
+                        "active_hit_rate",
+                        "filter_selection_basis",
+                        "final_test_ranked",
+                        "rescue_decision",
+                        "failed_gates",
+                    ]
+                ].sort_values(
+                    ["candidate_feature_set", "audit_scope", "directional_accuracy"],
+                    ascending=[True, True, False],
+                    na_position="last",
+                ).head(80).style.format(
+                    {
+                        "directional_accuracy": "{:.1%}",
+                        "after_cost_return": "{:.1%}",
+                        "max_drawdown": "{:.1%}",
+                        "bootstrap_ci_low": "{:.1%}",
+                        "permutation_p_value": "{:.3f}",
+                        "active_coverage": "{:.1%}",
+                        "active_hit_rate": "{:.1%}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+        if not btc_etf_flow_coverage.empty and str(btc_etf_flow_coverage.iloc[0].get("source_status", "")) == "worked":
+            st.info("ETF flows are loaded but currently diagnostic-only because coverage begins in 2024.")
     else:
         st.info("High-conviction BTC dominance and ETF-flow packs are BTC-first diagnostics. SOL/SPX-specific versions stay excluded until validated separately.")
 

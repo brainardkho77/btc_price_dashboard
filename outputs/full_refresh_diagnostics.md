@@ -1,7 +1,7 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `btc_research_20260512T082912Z`
+- Full refresh run ID: `btc_research_20260512T102621Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -16,7 +16,7 @@ Quick mode used `2018-01-01` to `2026-05-11` with `75` 30d official samples and 
 - Baselines that beat the best ML model: `momentum_90d, momentum_30d, buy_hold_direction`
 
 Validation gates failed by ML model:
-- `logistic_linear`: did_not_beat_buy_hold; did_not_beat_30d_momentum; did_not_beat_90d_momentum; failed_transaction_cost_check; low_reliability
+- `logistic_linear`: did_not_beat_buy_hold; did_not_beat_30d_momentum; did_not_beat_90d_momentum; failed_transaction_cost_check; failed_calibration_check; low_reliability
 - `hgb`: did_not_beat_buy_hold; did_not_beat_30d_momentum; did_not_beat_90d_momentum; failed_transaction_cost_check; low_reliability
 - `random_forest`: did_not_beat_buy_hold; did_not_beat_30d_momentum; did_not_beat_90d_momentum; failed_transaction_cost_check; low_reliability
 
@@ -38,15 +38,15 @@ Validation gates failed by ML model:
 
 ## Regime Findings
 - `momentum_90d` in `low_volatility`: samples `66`, accuracy `65.2%`, net return `2371.9%`, reliability `Low confidence`
-- `random_forest` in `post_etf`: samples `27`, accuracy `63.0%`, net return `196.2%`, reliability `Low confidence`
 - `buy_hold_direction` in `post_halving`: samples `24`, accuracy `62.5%`, net return `662.4%`, reliability `Low confidence`
 - `momentum_90d` in `high_rate`: samples `66`, accuracy `62.1%`, net return `267.2%`, reliability `Low confidence`
-- `logistic_linear` in `post_etf`: samples `27`, accuracy `59.3%`, net return `175.1%`, reliability `Low confidence`
+- `logistic_linear` in `post_etf`: samples `27`, accuracy `59.3%`, net return `170.1%`, reliability `Low confidence`
+- `random_forest` in `post_etf`: samples `27`, accuracy `59.3%`, net return `159.2%`, reliability `Low confidence`
+- `logistic_linear` in `post_halving`: samples `24`, accuracy `58.3%`, net return `433.5%`, reliability `Low confidence`
 - `momentum_90d` in `bear_market`: samples `45`, accuracy `57.8%`, net return `64.0%`, reliability `Low confidence`
-- `random_forest` in `bear_market`: samples `45`, accuracy `57.8%`, net return `133.4%`, reliability `Low confidence`
 - `momentum_30d` in `low_rate`: samples `34`, accuracy `55.9%`, net return `361.2%`, reliability `Low confidence`
+- `random_forest` in `bear_market`: samples `45`, accuracy `55.6%`, net return `104.2%`, reliability `Low confidence`
 - `momentum_90d` in `post_etf`: samples `27`, accuracy `55.6%`, net return `122.8%`, reliability `Low confidence`
-- `hgb` in `bear_market`: samples `45`, accuracy `55.6%`, net return `238.2%`, reliability `Low confidence`
 
 ## Binance Derivatives
 - Binance derivatives recovered: `True`

@@ -2,7 +2,7 @@
 
 ## Run Summary
 - Asset: `S&P 500 / SPX`
-- Run ID: `spx_research_20260511T155059Z`
+- Run ID: `spx_research_20260512T090323Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -19,8 +19,8 @@
 
 ## Promising But Rejected Candidates
 - `all_features_official` / `logistic_linear`: label `promising_but_rejected`, accuracy `64.6%`, net return `198.2%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
-- `all_features_official` / `random_forest`: label `promising_but_rejected`, accuracy `64.6%`, net return `186.7%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
-- `all_features_official` / `hgb`: label `promising_but_rejected`, accuracy `59.6%`, net return `137.9%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
+- `all_features_official` / `random_forest`: label `promising_but_rejected`, accuracy `62.6%`, net return `178.5%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
+- `all_features_official` / `hgb`: label `promising_but_rejected`, accuracy `59.6%`, net return `143.3%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
 
 ## Signal Quality
 - Signal quality rows were unavailable.

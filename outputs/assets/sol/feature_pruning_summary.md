@@ -2,16 +2,16 @@
 
 ## Run Summary
 - Asset: `SOL`
-- Run ID: `sol_research_20260512T125045Z`
-- Selected model: `logistic_linear`
+- Run ID: `sol_research_20260529T101537Z`
+- Selected model: `random_forest`
 - Signal: `neutral`
 - Reliability: `Medium confidence`
-- Current all-feature best ML: `logistic_linear` at `69.4%` accuracy, Brier `0.254`, net return `1240.2%`.
+- Current all-feature best ML: `random_forest` at `69.4%` accuracy, Brier `0.236`, net return `1034.3%`.
 - Best baseline: `random_permutation` at `55.6%` accuracy.
 
 ## Best Pruned Candidate
-- `all_features_official` / `logistic_linear`: samples `36`, accuracy `69.4%`, Brier `0.254`, calibration `0.122`, Sharpe `1.41`, drawdown `-37.4%`, net return `1240.2%`.
-- Stability evidence: bootstrap lower bound `52.8%`, bootstrap upper bound `83.3%`, permutation p-value `0.014`.
+- `all_features_official` / `random_forest`: samples `36`, accuracy `69.4%`, Brier `0.236`, calibration `0.075`, Sharpe `1.34`, drawdown `-37.4%`, net return `1034.3%`.
+- Stability evidence: bootstrap lower bound `55.6%`, bootstrap upper bound `83.3%`, permutation p-value `0.006`.
 - Promotion eligible: `False`. Reason: `current_all_features_reference`
 
 ## Promotion Decision
@@ -19,8 +19,8 @@
 
 ## Promising But Rejected Candidates
 - `all_features_official` / `logistic_linear`: label `promising_but_rejected`, accuracy `69.4%`, net return `1240.2%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
-- `all_features_official` / `random_forest`: label `promising_but_rejected`, accuracy `66.7%`, net return `968.0%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
-- `all_features_official` / `hgb`: label `promising_but_rejected`, accuracy `55.6%`, net return `485.6%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
+- `all_features_official` / `random_forest`: label `promising_but_rejected`, accuracy `69.4%`, net return `1034.3%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
+- `all_features_official` / `hgb`: label `promising_but_rejected`, accuracy `63.9%`, net return `663.5%`, CI low `n/a`, p-value `n/a`, reason `current_all_features_reference`.
 
 ## Signal Quality
 - Signal quality rows were unavailable.
@@ -38,7 +38,7 @@
 - `solana_ecosystem_stablecoin_supply_log` (`sol_ecosystem_only`): IC `-0.377`, p-value `0.018`, coverage `100.0%`, keep `True`.
 
 ## Noisy Or Redundant Factor Reasons
-- `weak_ic`: `29` features
+- `weak_ic`: `30` features
 
 ## Recommendation
 - Neutral signal justified: `True`

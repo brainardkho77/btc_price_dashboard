@@ -1,7 +1,7 @@
 run_id,asset_id,feature_name,latest_value,n_samples,missing_pct,first_date,last_date,used_in_model,notes
-btc_research_20260512T122205Z,btc,stablecoins_supply_chg_7d,0.005055655693134042,3079,0.2580722891566265,2017-12-07,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
-btc_research_20260512T122205Z,btc,stablecoin_liquidity_supply_to_btc_market_cap,0.19477464177914203,3086,0.2563855421686747,2017-11-30,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
-btc_research_20260512T122205Z,btc,stablecoin_liquidity_btc_market_cap_to_supply,5.13413856580938,3086,0.2563855421686747,2017-11-30,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
-btc_research_20260512T122205Z,btc,stablecoin_liquidity_supply_to_btc_market_cap_z_365d,0.8324476743668707,2967,0.2850602409638554,2018-03-29,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
-btc_research_20260512T122205Z,btc,stablecoin_liquidity_impulse_30d,0.012806625616867962,3056,0.2636144578313253,2017-12-30,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
-btc_research_20260512T122205Z,btc,stablecoin_liquidity_expansion_flag,1.0,4150,0.0,2015-01-01,2026-05-12,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+btc_research_20260529T094658Z,btc,stablecoins_supply_chg_7d,-0.0012613658780225023,3096,0.25701943844492436,2017-12-07,2026-05-29,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+btc_research_20260529T094658Z,btc,stablecoin_liquidity_supply_to_btc_market_cap,0.21491176506280477,3103,0.2553395728341733,2017-11-30,2026-05-29,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+btc_research_20260529T094658Z,btc,stablecoin_liquidity_btc_market_cap_to_supply,4.653072388604527,3103,0.2553395728341733,2017-11-30,2026-05-29,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+btc_research_20260529T094658Z,btc,stablecoin_liquidity_supply_to_btc_market_cap_z_365d,1.2155127120193006,2984,0.2838972882169426,2018-03-29,2026-05-29,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+btc_research_20260529T094658Z,btc,stablecoin_liquidity_impulse_30d,-0.003744757568394874,3073,0.2625389968802496,2017-12-30,2026-05-29,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.
+btc_research_20260529T094658Z,btc,stablecoin_liquidity_expansion_flag,1.0,4167,0.0,2015-01-01,2026-05-29,True,Stablecoin liquidity v2 feature from DefiLlama global stablecoin supply.

@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `btc_research_20260512T122205Z`
+- Run ID: `btc_research_20260529T094658Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -13,20 +13,20 @@
 - `Binance USD-M Futures` / `funding_rate`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 - `manual_csv` / `funding_rate`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 - `Binance USD-M Futures` / `open_interest`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
-- `manual_csv` / `open_interest`: `worked`, rows `2080`, dates `2020-09-01` to `2026-05-12`, missing `49.9%`, used `True`
+- `manual_csv` / `open_interest`: `worked`, rows `2097`, dates `2020-09-01` to `2026-05-29`, missing `49.7%`, used `True`
 - `Binance USD-M Futures` / `long_short_ratio`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
-- `manual_csv` / `long_short_ratio`: `worked`, rows `2061`, dates `2020-09-01` to `2026-05-12`, missing `49.9%`, used `True`
+- `manual_csv` / `long_short_ratio`: `worked`, rows `2078`, dates `2020-09-01` to `2026-05-29`, missing `49.7%`, used `True`
 - `Binance USD-M Futures` / `top_trader_account_ratio`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 - `manual_csv` / `top_trader_account_ratio`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 - `Binance USD-M Futures` / `top_trader_position_ratio`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 - `manual_csv` / `top_trader_position_ratio`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 - `Binance USD-M Futures` / `taker_buy_sell_ratio`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
-- `manual_csv` / `taker_buy_sell_ratio`: `worked`, rows `1952`, dates `2020-09-01` to `2026-05-12`, missing `49.9%`, used `True`
+- `manual_csv` / `taker_buy_sell_ratio`: `worked`, rows `1969`, dates `2020-09-01` to `2026-05-29`, missing `49.7%`, used `True`
 - `Binance USD-M Futures` / `basis`: `failed`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 - `manual_csv` / `basis`: `skipped`, rows `0`, dates `nan` to `nan`, missing `100.0%`, used `False`
 
 ## Derivatives Impact
-- Best with derivatives: `logistic_linear` at `49.0%`. Best without derivatives: `hgb` at `52.0%`. Improved directional accuracy: `False`.
+- Best with derivatives: `hgb` at `49.0%`. Best without derivatives: `hgb` at `53.0%`. Improved directional accuracy: `False`.
 
 ## Feature Group Watchlist
 - `dollar_rates_only` / `logistic_linear`: samples `100`, accuracy `55.0%`, Sharpe `0.91`, drawdown `-42.9%`, Brier `0.245`, calibration error `0.108`, reliability `Low confidence`.

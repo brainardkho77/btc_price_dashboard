@@ -1,7 +1,7 @@
 # Derivatives Recovery Report
 
 ## Run Summary
-- Run ID: `spx_research_20260512T130051Z`
+- Run ID: `spx_research_20260529T102518Z`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
 - Reliability: `Low confidence`
@@ -23,17 +23,17 @@
 
 ## Feature Group Watchlist
 - `dollar_rates_only` / `logistic_linear`: samples `99`, accuracy `68.7%`, Sharpe `1.01`, drawdown `-18.2%`, Brier `0.215`, calibration error `0.097`, reliability `Medium confidence`.
-- Remains strongest diagnostic group: `True`
+- Remains strongest diagnostic group: `False`
 - It is not selected unless it passes the official 30d selection rules in the main leaderboard.
 
 ## Feature Group Stability
+- `all_features` / `hgb`: `12` stable slices
 - `all_features` / `logistic_linear`: `12` stable slices
 - `all_features` / `random_forest`: `12` stable slices
 - `dollar_rates_only` / `logistic_linear`: `12` stable slices
 - `price_momentum_only` / `random_forest`: `12` stable slices
-- `all_features` / `hgb`: `11` stable slices
 
 ## Conclusion
 - Derivatives improved 30d official diagnostics: `False`
 - `no_valid_edge` remains correct: `True`
-- Recommended next step: Keep no_valid_edge and prioritize validated derivative history plus feature pruning before adding more models.
+- Recommended next step: Feature-group leadership changed; inspect stability before pruning or expanding features.

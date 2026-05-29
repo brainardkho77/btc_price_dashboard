@@ -1,12 +1,12 @@
 run_id,asset_id,source_status,rows,first_date,last_date,feature_name,latest_value,missing_pct,used_in_model,regime_observation_count,notes
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_level,60.82037248231625,0.0002409638554217164,True,4149,Manual BTC dominance feature; release-lagged before model training.
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_chg_7d,-0.30085654528085826,0.001927710843373509,True,4142,Manual BTC dominance feature; release-lagged before model training.
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_chg_30d,1.2106673605602651,0.00746987951807232,True,4119,Manual BTC dominance feature; release-lagged before model training.
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_z_90d,1.6898334755770914,0.0072289156626506035,True,4120,Manual BTC dominance feature; release-lagged before model training.
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_z_365d,0.19559315074078082,0.028915662650602414,True,4030,Manual BTC dominance feature; release-lagged before model training.
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_drawdown_365d,-0.07725074242548224,0.028915662650602414,True,4030,Manual BTC dominance feature; release-lagged before model training.
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_regime_capitulation,0.0,0.0,True,201,Manual BTC dominance feature; release-lagged before model training.
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_regime_rotation_starting,0.0,0.0,True,951,Manual BTC dominance feature; release-lagged before model training.
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_regime_alt_season,0.0,0.0,True,199,Manual BTC dominance feature; release-lagged before model training.
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_regime_accumulation,0.0,0.0,True,456,Manual BTC dominance feature; release-lagged before model training.
-btc_research_20260512T122205Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_regime_btc_safe_haven,0.0,0.0,True,433,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_level,60.82037248231625,0.0002399808015358662,True,4166,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_chg_7d,0.0,0.0019198464122870407,True,4159,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_chg_30d,0.42118620500471593,0.0074394048476121855,True,4136,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_z_90d,1.1201124292703744,0.007199424046076319,True,4137,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_z_365d,0.27367847040859694,0.028797696184305277,True,4047,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_drawdown_365d,-0.07725074242548224,0.028797696184305277,True,4047,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_regime_capitulation,0.0,0.0,True,201,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_regime_rotation_starting,0.0,0.0,True,951,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_regime_alt_season,0.0,0.0,True,199,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_regime_accumulation,0.0,0.0,True,465,Manual BTC dominance feature; release-lagged before model training.
+btc_research_20260529T094658Z,btc,worked,4421,2014-04-01,2026-05-11,btc_dominance_regime_btc_safe_haven,0.0,0.0,True,435,Manual BTC dominance feature; release-lagged before model training.

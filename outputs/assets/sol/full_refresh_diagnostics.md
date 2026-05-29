@@ -1,8 +1,8 @@
 # Full Refresh Diagnostics
 
 ## Summary
-- Full refresh run ID: `sol_research_20260512T125045Z`
-- Selected model: `logistic_linear`
+- Full refresh run ID: `sol_research_20260529T101537Z`
+- Selected model: `random_forest`
 - Signal: `neutral`
 - Reliability: `Medium confidence`
 - no_valid_edge triggered correctly: `False`
@@ -11,42 +11,42 @@
 Quick baseline was unavailable, so quick-vs-full comparisons are limited.
 
 ## 30d Official Model Comparison
-- Best ML model: `logistic_linear` with directional accuracy `69.4%`
+- Best ML model: `random_forest` with directional accuracy `69.4%`
 - Best baseline: `random_permutation` with directional accuracy `55.6%`
 - Baselines that beat the best ML model: `none`
 
 Validation gates failed by ML model:
-- `logistic_linear`: selected_model
-- `hgb`: did_not_beat_90d_momentum; did_not_beat_random_baseline; failed_transaction_cost_check; failed_calibration_check; low_reliability
-- `random_forest`: not_selected_by_primary_30d_rules
+- `logistic_linear`: not_selected_by_primary_30d_rules
+- `hgb`: not_selected_by_primary_30d_rules
+- `random_forest`: selected_model
 
 ## Feature Group Findings
 - `stablecoins_only` / `logistic_linear`: samples `36`, accuracy `75.0%`, net return `1465.9%`, reliability `Medium confidence`
 - `dollar_rates_only` / `random_forest`: samples `36`, accuracy `72.2%`, net return `1080.1%`, reliability `Medium confidence`
+- `all_features` / `random_forest`: samples `36`, accuracy `69.4%`, net return `1034.3%`, reliability `Medium confidence`
 - `btc_dominance_regime` / `logistic_linear`: samples `36`, accuracy `69.4%`, net return `1269.7%`, reliability `Medium confidence`
 - `all_features` / `logistic_linear`: samples `36`, accuracy `69.4%`, net return `1240.2%`, reliability `Medium confidence`
-- `all_features` / `random_forest`: samples `36`, accuracy `66.7%`, net return `968.0%`, reliability `Medium confidence`
-- `macro_liquidity_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `644.6%`, reliability `Medium confidence`
-- `sol_ecosystem_only` / `logistic_linear`: samples `36`, accuracy `66.7%`, net return `957.8%`, reliability `Medium confidence`
-- `sol_ecosystem_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `1124.4%`, reliability `Medium confidence`
-- `btc_dominance_regime` / `random_forest`: samples `36`, accuracy `66.7%`, net return `1257.8%`, reliability `Medium confidence`
-- `stablecoins_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `465.2%`, reliability `Low confidence`
+- `sol_ecosystem_only` / `random_forest`: samples `36`, accuracy `69.4%`, net return `1286.9%`, reliability `Medium confidence`
+- `macro_liquidity_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `772.7%`, reliability `Medium confidence`
+- `risk_assets_only` / `random_forest`: samples `36`, accuracy `66.7%`, net return `593.2%`, reliability `Medium confidence`
+- `risk_assets_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `1038.2%`, reliability `Medium confidence`
+- `dollar_rates_only` / `hgb`: samples `36`, accuracy `66.7%`, net return `1044.9%`, reliability `Medium confidence`
 
 ## Feature Group Watchlist
 - `dollar_rates_only` / `logistic_linear`: samples `36`, accuracy `63.9%`, Sharpe `1.28`, max drawdown `-37.4%`, Brier `0.256`, calibration error `0.105`, beats buy-hold `True`, beats momentum `True`.
 - It remains diagnostic only because feature-group results are not official model-selection inputs and must prove stability across regimes first.
 
 ## Regime Findings
-- `hgb` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Low confidence`
-- `random_permutation` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Low confidence`
+- `hgb` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Medium confidence`
 - `buy_hold_direction` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Low confidence`
-- `logistic_linear` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Medium confidence`
+- `random_permutation` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Low confidence`
 - `random_forest` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Medium confidence`
+- `logistic_linear` in `high_volatility`: samples `1`, accuracy `100.0%`, net return `18.5%`, reliability `Medium confidence`
 - `logistic_linear` in `bull_market`: samples `22`, accuracy `72.7%`, net return `765.3%`, reliability `Medium confidence`
+- `random_forest` in `bear_market`: samples `14`, accuracy `71.4%`, net return `36.5%`, reliability `Medium confidence`
+- `random_forest` in `post_etf`: samples `27`, accuracy `70.4%`, net return `162.3%`, reliability `Medium confidence`
 - `logistic_linear` in `post_etf`: samples `27`, accuracy `70.4%`, net return `209.9%`, reliability `Medium confidence`
 - `logistic_linear` in `high_rate`: samples `36`, accuracy `69.4%`, net return `1240.2%`, reliability `Medium confidence`
-- `logistic_linear` in `low_volatility`: samples `35`, accuracy `68.6%`, net return `1031.1%`, reliability `Medium confidence`
-- `hgb` in `bull_market`: samples `22`, accuracy `68.2%`, net return `473.2%`, reliability `Low confidence`
 
 ## Binance Derivatives
 - Binance derivatives recovered: `False`

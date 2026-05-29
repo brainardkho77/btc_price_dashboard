@@ -63,6 +63,7 @@ from diagnostic_outputs import (
     sol_deployability_audit,
     sol_signal_policy_deployment_check,
     sol_stability_candidate_pairs,
+    spx_cross_asset_rescue_audit,
     SPX_RISK_OFF_AUDIT_PAIRS,
     SPX_RISK_OFF_RETURN_METHOD,
 )
@@ -132,6 +133,32 @@ def synthetic_sol_raw(rows=900):
             "solana_tvl_usd": 3_000_000_000 + np.arange(rows) * 2_000_000,
             "solana_dex_volume_usd": 500_000_000 + np.arange(rows) * 1_000_000,
             "solana_fees_revenue_usd": 1_000_000 + np.arange(rows) * 2_000,
+            "fear_greed_value": 50 + np.sin(np.arange(rows) / 30) * 20,
+        },
+        index=dates,
+    )
+
+
+def synthetic_spx_raw(rows=1200):
+    dates = pd.date_range("2018-01-01", periods=rows, freq="D")
+    price = pd.Series(300 * np.exp(np.linspace(0, 0.7, rows) + np.sin(np.arange(rows) / 45) * 0.04), index=dates)
+    return pd.DataFrame(
+        {
+            "asset_open": price * 0.995,
+            "asset_high": price * 1.01,
+            "asset_low": price * 0.99,
+            "asset_close": price,
+            "asset_volume": 50_000_000 + np.arange(rows) * 1000,
+            "btc_proxy_close": 10_000 * np.exp(np.linspace(0, 1.2, rows) + np.sin(np.arange(rows) / 35) * 0.10),
+            "eth_close": 800 * np.exp(np.linspace(0, 1.0, rows) + np.sin(np.arange(rows) / 30) * 0.12),
+            "nasdaq_close": 7000 * np.exp(np.linspace(0, 0.8, rows) + np.sin(np.arange(rows) / 50) * 0.05),
+            "gold_close": 1500 + np.sin(np.arange(rows) / 60) * 75 + np.arange(rows) * 0.15,
+            "tlt_close": 100 + np.sin(np.arange(rows) / 70) * 8,
+            "vix_close": 20 + np.sin(np.arange(rows) / 30) * 6,
+            "us_10y_yield": 3.0 + np.sin(np.arange(rows) / 90) * 0.5,
+            "us_2y_yield": 2.8 + np.sin(np.arange(rows) / 80) * 0.6,
+            "trade_weighted_usd": 115 + np.cos(np.arange(rows) / 70),
+            "m2_money_supply": 20_000 + np.arange(rows),
             "fear_greed_value": 50 + np.sin(np.arange(rows) / 30) * 20,
         },
         index=dates,
@@ -433,6 +460,72 @@ def test_btc_regime_filter_audit_missing_filter_input_blocks_deployability():
     assert stable_rows["promotion_eligible"].eq(False).all()
 
 
+def test_spx_cross_asset_rescue_audit_is_scoped_and_blocks_final_test_slices():
+    config = ResearchConfig(quick_initial_train_days=365)
+    raw = synthetic_spx_raw(rows=1200)
+    feature_result = build_features(raw, config)
+    asset_rows = pd.DataFrame(
+        [
+            {
+                "candidate_feature_set": "spx_cross_asset_risk",
+                "model_name": "logistic_linear",
+                "n_samples": 12,
+                "directional_accuracy": 0.68,
+                "brier_score": 0.23,
+                "calibration_error": 0.10,
+                "net_return": 1.0,
+                "max_drawdown": -0.12,
+                "bootstrap_ci_low": 0.58,
+                "permutation_p_value": 0.19,
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": True,
+                "beats_random_baseline": True,
+                "promotion_eligible": False,
+                "rejection_reason": "failed_bootstrap_or_permutation_stability_check",
+            }
+        ]
+    )
+    audit = spx_cross_asset_rescue_audit("spx_research_test", raw, feature_result, config, asset_rows, quick=True)
+    validate_frame("spx_cross_asset_rescue_audit.csv", audit)
+    assert not audit.empty
+    assert audit["candidate_feature_set"].eq("spx_cross_asset_risk").all()
+    assert audit["model_name"].eq("logistic_linear").all()
+    diagnostic = audit[audit["audit_scope"] == "diagnostic_slice"]
+    assert not diagnostic.empty
+    assert diagnostic["filter_selection_basis"].eq("diagnostic_final_test_slice").all()
+    assert diagnostic["promotion_eligible"].eq(False).all()
+    assert diagnostic["rescue_decision"].eq("diagnostic_only").all()
+    train_rows = audit[audit["audit_scope"] == "train_selected_filter"]
+    assert not train_rows.empty
+    assert train_rows["filter_selection_basis"].isin(["rolling_train_calibration_only", "unavailable_filter_input", "unavailable"]).all()
+    assert not train_rows["rescue_decision"].eq("deployable").any()
+
+
+def test_spx_cross_asset_rescue_missing_inputs_block_deployability():
+    config = ResearchConfig(quick_initial_train_days=365)
+    raw = synthetic_spx_raw(rows=1200).drop(columns=["vix_close", "nasdaq_close", "btc_proxy_close", "us_10y_yield"])
+    feature_result = build_features(raw, config)
+    asset_rows = pd.DataFrame(
+        [
+            {
+                "candidate_feature_set": "spx_cross_asset_risk",
+                "model_name": "logistic_linear",
+                "beats_buy_hold": True,
+                "beats_momentum_30d": True,
+                "beats_momentum_90d": True,
+                "beats_random_baseline": True,
+                "promotion_eligible": False,
+            }
+        ]
+    )
+    audit = spx_cross_asset_rescue_audit("spx_research_test", raw, feature_result, config, asset_rows, quick=True)
+    missing_rows = audit[audit["filter_name"].isin(["high_vix", "low_vix", "nasdaq_up", "nasdaq_down", "btc_up", "btc_down", "rates_rising", "rates_falling"])]
+    assert not missing_rows.empty
+    assert missing_rows["filter_selection_basis"].isin(["unavailable_filter_input", "unavailable"]).all()
+    assert missing_rows["promotion_eligible"].eq(False).all()
+
+
 def test_target_generation_uses_future_prices_only():
     config = ResearchConfig()
     raw = synthetic_research_raw()
@@ -556,6 +649,7 @@ def test_diagnostic_schemas_include_required_outputs():
         "btc_no_edge_drilldown.csv",
         "btc_edge_failure_audit.csv",
         "btc_factor_rescue_report.csv",
+        "spx_cross_asset_rescue_audit.csv",
         "btc_candidate_rescue_audit.csv",
         "btc_regime_filter_audit.csv",
         "btc_baseline_dominance_report.csv",
@@ -589,6 +683,8 @@ def test_diagnostic_schemas_include_required_outputs():
     assert "rejection_category" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_no_edge_drilldown.csv"]
     assert "distance_to_deployable" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_edge_failure_audit.csv"]
     assert "rescue_status" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_factor_rescue_report.csv"]
+    assert "audit_scope" in DIAGNOSTIC_OUTPUT_SCHEMAS["spx_cross_asset_rescue_audit.csv"]
+    assert "filter_selection_basis" in DIAGNOSTIC_OUTPUT_SCHEMAS["spx_cross_asset_rescue_audit.csv"]
     assert "filter_selection_basis" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_candidate_rescue_audit.csv"]
     assert "final_test_ranked" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_candidate_rescue_audit.csv"]
     assert "leakage_check_passed" in DIAGNOSTIC_OUTPUT_SCHEMAS["btc_regime_filter_audit.csv"]

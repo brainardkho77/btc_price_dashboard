@@ -114,6 +114,7 @@ def load_outputs(output_dir: Path, missing_message: str) -> dict:
             if output_dir.name == "spx"
             else empty_diagnostic_frame("spx_risk_off_audit.csv")
         ),
+        "spx_cross_asset_rescue_audit": read_diagnostic("spx_cross_asset_rescue_audit.csv"),
         "sol_selection_audit": read_diagnostic("sol_selection_audit.csv"),
         "sol_signal_policy_deployment": read_diagnostic("sol_signal_policy_deployment.csv"),
         "btc_no_edge_drilldown": read_diagnostic("btc_no_edge_drilldown.csv"),
@@ -312,6 +313,7 @@ sol_selection_audit = outputs["sol_selection_audit"]
 sol_signal_policy_deployment = outputs["sol_signal_policy_deployment"]
 sol_deployability_audit = outputs["sol_deployability_audit"]
 spx_risk_off_audit = outputs["spx_risk_off_audit"]
+spx_cross_asset_rescue_audit = outputs["spx_cross_asset_rescue_audit"]
 btc_no_edge_drilldown_frame = outputs["btc_no_edge_drilldown"]
 btc_edge_failure_audit = outputs["btc_edge_failure_audit"]
 btc_factor_rescue_report = outputs["btc_factor_rescue_report"]
@@ -945,6 +947,81 @@ with signal_tab:
             st.caption("This policy can adjust interpretation only; it cannot change the selected model.")
 
     if selected_asset == "spx":
+        st.subheader("SPX Cross-Asset Rescue")
+        if str(primary_row["selected_model"]) == "no_valid_edge":
+            st.info("SPX has no validated 30d directional edge unless official gates pass.")
+        st.caption("Cross-asset rescue filters are diagnostic unless selected from train/calibration data and validated out of sample.")
+        st.caption("Final-test-ranked slices cannot promote a model.")
+        if spx_cross_asset_rescue_audit.empty:
+            st.warning("No precomputed SPX cross-asset rescue audit is available. Run python research_run.py --refresh --asset spx first.")
+        else:
+            rescue_display = spx_cross_asset_rescue_audit.copy()
+            rescue_display["_decision_rank"] = rescue_display["rescue_decision"].map({"deployable": 0, "diagnostic_only": 1, "not_deployable": 2}).fillna(3)
+            best_train = rescue_display[rescue_display["audit_scope"] == "train_selected_filter"].sort_values(
+                ["_decision_rank", "passes_active_coverage_floor", "active_hit_rate", "after_cost_return"],
+                ascending=[True, False, False, False],
+                na_position="last",
+            ).head(1)
+            best_slice = rescue_display[rescue_display["audit_scope"] == "diagnostic_slice"].sort_values(
+                ["active_hit_rate", "after_cost_return", "active_coverage"],
+                ascending=[False, False, False],
+                na_position="last",
+            ).head(1)
+            if not best_train.empty:
+                row = best_train.iloc[0]
+                rescue_cols = st.columns(5)
+                rescue_cols[0].metric("Train-selected filter", str(row.get("filter_name", "n/a")))
+                rescue_cols[1].metric("Active coverage", fmt_pct(row.get("active_coverage", pd.NA)))
+                rescue_cols[2].metric("Active hit rate", fmt_pct(row.get("active_hit_rate", pd.NA)))
+                rescue_cols[3].metric("After-cost return", fmt_pct(row.get("after_cost_return", pd.NA)))
+                rescue_cols[4].metric("Decision", str(row.get("rescue_decision", "n/a")))
+                st.caption(f"Failed gates: {row.get('failed_gates', '')}. {row.get('rejection_reason', '')}")
+            if not best_slice.empty:
+                row = best_slice.iloc[0]
+                st.caption(
+                    f"Best diagnostic slice: `{row.get('filter_name', 'n/a')}` with active hit rate "
+                    f"`{fmt_pct(row.get('active_hit_rate', pd.NA))}`. This is final-test-ranked and cannot promote."
+                )
+            st.dataframe(
+                rescue_display.drop(columns=["_decision_rank"], errors="ignore").sort_values(
+                    ["audit_scope", "rescue_decision", "active_hit_rate", "after_cost_return"],
+                    ascending=[True, True, False, False],
+                    na_position="last",
+                )[
+                    [
+                        "audit_scope",
+                        "filter_name",
+                        "filter_selection_basis",
+                        "leakage_check_passed",
+                        "official_sample_count",
+                        "active_signal_count",
+                        "active_coverage",
+                        "active_hit_rate",
+                        "directional_accuracy",
+                        "after_cost_return",
+                        "bootstrap_ci_low",
+                        "permutation_p_value",
+                        "regime_concentration_score",
+                        "best_regime",
+                        "promotion_eligible",
+                        "rescue_decision",
+                        "failed_gates",
+                    ]
+                ].style.format(
+                    {
+                        "active_coverage": "{:.1%}",
+                        "active_hit_rate": "{:.1%}",
+                        "directional_accuracy": "{:.1%}",
+                        "after_cost_return": "{:.1%}",
+                        "bootstrap_ci_low": "{:.1%}",
+                        "permutation_p_value": "{:.3f}",
+                        "regime_concentration_score": "{:.3f}",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+
         st.subheader("SPX Risk-Off Audit")
         if str(primary_row["selected_model"]) == "no_valid_edge":
             st.info("SPX has no validated 30d directional edge.")

@@ -4221,6 +4221,384 @@ def btc_regime_filter_audit(
     return pd.DataFrame(rows)
 
 
+SPX_CROSS_ASSET_RESCUE_CANDIDATE = "spx_cross_asset_risk"
+SPX_CROSS_ASSET_RESCUE_MODEL = "logistic_linear"
+SPX_CROSS_ASSET_RESCUE_FILTERS = (
+    "high_vix",
+    "low_vix",
+    "nasdaq_up",
+    "nasdaq_down",
+    "btc_up",
+    "btc_down",
+    "rates_rising",
+    "rates_falling",
+    "2020-2021",
+    "2022-2023",
+    "2024-present",
+)
+
+
+def _spx_cross_asset_masks(raw: pd.DataFrame, feature_result, dates: pd.DatetimeIndex) -> Dict[str, Optional[pd.Series]]:
+    masks: Dict[str, Optional[pd.Series]] = {}
+    features = feature_result.features
+
+    if "macro_vix_z_365d" in features:
+        high_vix = features["macro_vix_z_365d"].reindex(dates).astype(float) >= 0
+    elif "vix_close" in raw:
+        vix = raw["vix_close"].astype(float)
+        high_vix = vix.reindex(dates) >= vix.expanding(min_periods=180).median().reindex(dates)
+    elif "macro_vix" in features:
+        vix = features["macro_vix"].astype(float)
+        high_vix = vix.reindex(dates) >= vix.expanding(min_periods=180).median().reindex(dates)
+    else:
+        high_vix = None
+    masks["high_vix"] = high_vix
+    masks["low_vix"] = (~high_vix) if high_vix is not None else None
+
+    if "cross_asset_nasdaq_ret_30d" in features:
+        nasdaq_up = features["cross_asset_nasdaq_ret_30d"].reindex(dates).astype(float) > 0
+    elif "nasdaq_close" in raw:
+        nasdaq_up = np.log(raw["nasdaq_close"].astype(float) / raw["nasdaq_close"].astype(float).shift(30)).reindex(dates) > 0
+    else:
+        nasdaq_up = None
+    masks["nasdaq_up"] = nasdaq_up
+    masks["nasdaq_down"] = (~nasdaq_up) if nasdaq_up is not None else None
+
+    if "cross_asset_btc_ret_30d" in features:
+        btc_up = features["cross_asset_btc_ret_30d"].reindex(dates).astype(float) > 0
+    elif "btc_proxy_close" in raw:
+        btc_up = np.log(raw["btc_proxy_close"].astype(float) / raw["btc_proxy_close"].astype(float).shift(30)).reindex(dates) > 0
+    elif "btc_close" in raw:
+        btc_up = np.log(raw["btc_close"].astype(float) / raw["btc_close"].astype(float).shift(30)).reindex(dates) > 0
+    else:
+        btc_up = None
+    masks["btc_up"] = btc_up
+    masks["btc_down"] = (~btc_up) if btc_up is not None else None
+
+    if "macro_us_10y_yield_chg_30d" in features:
+        rates_rising = features["macro_us_10y_yield_chg_30d"].reindex(dates).astype(float) > 0
+    elif "us_10y_yield" in raw:
+        rates_rising = raw["us_10y_yield"].astype(float).diff(30).reindex(dates) > 0
+    else:
+        rates_rising = None
+    masks["rates_rising"] = rates_rising
+    masks["rates_falling"] = (~rates_rising) if rates_rising is not None else None
+
+    masks["2020-2021"] = pd.Series((dates >= pd.Timestamp("2020-01-01")) & (dates <= pd.Timestamp("2021-12-31")), index=dates)
+    masks["2022-2023"] = pd.Series((dates >= pd.Timestamp("2022-01-01")) & (dates <= pd.Timestamp("2023-12-31")), index=dates)
+    masks["2024-present"] = pd.Series(dates >= pd.Timestamp("2024-01-01"), index=dates)
+    return {name: (mask.reindex(dates).fillna(False).astype(bool) if mask is not None else None) for name, mask in masks.items()}
+
+
+def _rescue_concentration_from_masks(preds: pd.DataFrame, masks: Dict[str, Optional[pd.Series]], config: ResearchConfig) -> Tuple[float, str, bool]:
+    period_names = ["2020-2021", "2022-2023", "2024-present"]
+    returns = []
+    for name in period_names:
+        mask = masks.get(name)
+        if mask is None:
+            returns.append((name, np.nan, np.nan, 0))
+            continue
+        metrics = _candidate_slice_metrics(preds, mask, config)
+        returns.append((name, metrics["after_cost_return"], metrics["directional_accuracy"], metrics["n_samples"]))
+    positive = [(name, ret) for name, ret, acc, n in returns if n >= 8 and pd.notna(ret) and ret > 0 and pd.notna(acc) and acc >= 0.55]
+    best = max(returns, key=lambda row: (-np.inf if pd.isna(row[1]) else row[1]))[0] if returns else ""
+    if not positive:
+        return 1.0, best, False
+    total = sum(abs(ret) for _, ret in positive)
+    score = max(abs(ret) for _, ret in positive) / total if total else 1.0
+    return float(score), best, bool(len(positive) >= 2 and score <= 0.80)
+
+
+def _spx_cross_asset_empty_row(
+    run_id: str,
+    generated_at: str,
+    filter_name: str,
+    basis: str,
+    reason: str,
+    *,
+    audit_scope: str = "train_selected_filter",
+) -> dict:
+    return {
+        "run_id": run_id,
+        "asset_id": "spx",
+        "candidate_feature_set": SPX_CROSS_ASSET_RESCUE_CANDIDATE,
+        "model_name": SPX_CROSS_ASSET_RESCUE_MODEL,
+        "audit_scope": audit_scope,
+        "filter_name": filter_name,
+        "filter_selection_basis": basis,
+        "selection_window_end": "",
+        "test_window_start": "",
+        "test_window_end": "",
+        "leakage_check_passed": False,
+        "official_sample_count": 0,
+        "active_signal_count": 0,
+        "active_coverage": 0.0,
+        "active_hit_rate": np.nan,
+        "directional_accuracy": np.nan,
+        "brier_score": np.nan,
+        "calibration_error": np.nan,
+        "after_cost_return": np.nan,
+        "max_drawdown": np.nan,
+        "bootstrap_ci_low": np.nan,
+        "permutation_p_value": np.nan,
+        "regime_concentration_score": np.nan,
+        "best_regime": "",
+        "beats_buy_hold": False,
+        "beats_momentum_30d": False,
+        "beats_momentum_90d": False,
+        "beats_random_baseline": False,
+        "passes_transaction_cost_check": False,
+        "passes_active_coverage_floor": False,
+        "passes_bootstrap_gate": False,
+        "passes_permutation_gate": False,
+        "passes_regime_stability_gate": False,
+        "promotion_eligible": False,
+        "rescue_decision": "not_deployable",
+        "failed_gates": basis,
+        "rejection_reason": reason,
+        "generated_at": generated_at,
+    }
+
+
+def _spx_cross_asset_decision_row(
+    run_id: str,
+    generated_at: str,
+    preds: pd.DataFrame,
+    frame: pd.DataFrame,
+    summary_row: pd.Series,
+    masks: Dict[str, Optional[pd.Series]],
+    config: ResearchConfig,
+    *,
+    filter_name: str,
+    audit_scope: str,
+    filter_selection_basis: str,
+    selection_window_end: str,
+    leakage_ok: bool,
+    final_test_ranked: bool,
+    quick: bool,
+) -> dict:
+    metrics = _filtered_prediction_metrics(frame, config)
+    active_preds = frame[frame["policy_position"].astype(float) > 0].copy()
+    if active_preds.empty:
+        concentration_score, best_regime, concentration_pass = np.nan, "", False
+    else:
+        active_masks = {name: (mask.reindex(active_preds.index).fillna(False).astype(bool) if mask is not None else None) for name, mask in masks.items()}
+        concentration_score, best_regime, concentration_pass = _rescue_concentration_from_masks(active_preds, active_masks, config)
+    active_floor = active_signal_floor(len(frame))
+    passes_active = metrics["active_signal_count"] >= active_floor
+    passes_bootstrap = bool(pd.notna(metrics["bootstrap_ci_low"]) and metrics["bootstrap_ci_low"] > 0.50)
+    passes_permutation = bool(pd.notna(metrics["permutation_p_value"]) and metrics["permutation_p_value"] <= 0.10)
+    passes_transaction = bool(pd.notna(metrics["after_cost_return"]) and metrics["after_cost_return"] > 0)
+    beats_buy_hold = bool(summary_row.get("beats_buy_hold", False))
+    beats_m30 = bool(summary_row.get("beats_momentum_30d", False))
+    beats_m90 = bool(summary_row.get("beats_momentum_90d", False))
+    beats_random = bool(summary_row.get("beats_random_baseline", False))
+    brier_ok = not (
+        pd.notna(metrics["brier_score"])
+        and pd.notna(summary_row.get("brier_score", np.nan))
+        and float(metrics["brier_score"]) > float(summary_row.get("brier_score")) + MATERIAL_BRIER_WORSENING
+    )
+    calibration_ok = not (
+        pd.notna(metrics["calibration_error"])
+        and pd.notna(summary_row.get("calibration_error", np.nan))
+        and float(metrics["calibration_error"]) > float(summary_row.get("calibration_error")) + MATERIAL_CALIBRATION_WORSENING
+    )
+    drawdown_ok = not (
+        pd.notna(metrics["max_drawdown"])
+        and pd.notna(summary_row.get("max_drawdown", np.nan))
+        and float(metrics["max_drawdown"]) < float(summary_row.get("max_drawdown")) - MATERIAL_DRAWDOWN_WORSENING
+    )
+    failed = []
+    if final_test_ranked:
+        failed.append("final_test_ranked")
+    if not leakage_ok:
+        failed.append("leakage_check")
+    if not passes_active:
+        failed.append("active_coverage_floor")
+    if not beats_buy_hold:
+        failed.append("buy_hold")
+    if not beats_m30:
+        failed.append("momentum_30d")
+    if not beats_m90:
+        failed.append("momentum_90d")
+    if not beats_random:
+        failed.append("random_baseline")
+    if not passes_transaction:
+        failed.append("transaction_cost_check")
+    if not passes_bootstrap:
+        failed.append("bootstrap_lower_bound")
+    if not passes_permutation:
+        failed.append("permutation_p_value")
+    if not concentration_pass:
+        failed.append("regime_stability")
+    if not brier_ok:
+        failed.append("material_brier_worsening")
+    if not calibration_ok:
+        failed.append("material_calibration_worsening")
+    if not drawdown_ok:
+        failed.append("material_drawdown_worsening")
+    promotion_eligible = bool(not failed)
+    if promotion_eligible:
+        decision = "deployable"
+        reason = "All train-selected cross-asset rescue gates passed."
+    elif final_test_ranked:
+        decision = "diagnostic_only"
+        reason = "Final-test-ranked slices are diagnostic-only and cannot promote a model."
+    elif not passes_active or not passes_transaction or not concentration_pass:
+        decision = "not_deployable"
+        reason = "Filtered policy failed active-coverage, after-cost, or regime-stability requirements."
+    else:
+        decision = "diagnostic_only"
+        reason = "Cross-asset filter is interesting but failed one or more statistical promotion gates."
+    return {
+        "run_id": run_id,
+        "asset_id": "spx",
+        "candidate_feature_set": SPX_CROSS_ASSET_RESCUE_CANDIDATE,
+        "model_name": SPX_CROSS_ASSET_RESCUE_MODEL,
+        "audit_scope": audit_scope,
+        "filter_name": filter_name,
+        "filter_selection_basis": filter_selection_basis,
+        "selection_window_end": selection_window_end,
+        "test_window_start": str(preds.index.min().date()) if not preds.empty else "",
+        "test_window_end": str(preds.index.max().date()) if not preds.empty else "",
+        "leakage_check_passed": bool(leakage_ok),
+        "official_sample_count": int(len(frame)),
+        "active_signal_count": metrics["active_signal_count"],
+        "active_coverage": metrics["active_coverage"],
+        "active_hit_rate": metrics["active_hit_rate"],
+        "directional_accuracy": metrics["directional_accuracy"],
+        "brier_score": metrics["brier_score"],
+        "calibration_error": metrics["calibration_error"],
+        "after_cost_return": metrics["after_cost_return"],
+        "max_drawdown": metrics["max_drawdown"],
+        "bootstrap_ci_low": metrics["bootstrap_ci_low"],
+        "permutation_p_value": metrics["permutation_p_value"],
+        "regime_concentration_score": concentration_score,
+        "best_regime": best_regime,
+        "beats_buy_hold": beats_buy_hold,
+        "beats_momentum_30d": beats_m30,
+        "beats_momentum_90d": beats_m90,
+        "beats_random_baseline": beats_random,
+        "passes_transaction_cost_check": passes_transaction,
+        "passes_active_coverage_floor": passes_active,
+        "passes_bootstrap_gate": passes_bootstrap,
+        "passes_permutation_gate": passes_permutation,
+        "passes_regime_stability_gate": bool(concentration_pass),
+        "promotion_eligible": promotion_eligible,
+        "rescue_decision": decision,
+        "failed_gates": "; ".join(dict.fromkeys(failed)),
+        "rejection_reason": reason,
+        "generated_at": generated_at,
+    }
+
+
+def spx_cross_asset_rescue_audit(
+    run_id: str,
+    raw: pd.DataFrame,
+    feature_result,
+    config: ResearchConfig,
+    asset_feature_sets: pd.DataFrame,
+    *,
+    quick: bool,
+) -> pd.DataFrame:
+    asset_id = _asset_id_from_run(run_id)
+    if asset_id != "spx":
+        return empty_diagnostic_frame("spx_cross_asset_rescue_audit.csv")
+    generated_at = pd.Timestamp.utcnow().isoformat()
+    candidate_sets = candidate_feature_sets(feature_result.feature_cols, asset_id)
+    candidate_cols = candidate_sets.get(SPX_CROSS_ASSET_RESCUE_CANDIDATE, [])
+    lookup = (
+        asset_feature_sets.set_index(["candidate_feature_set", "model_name"], drop=False)
+        if not asset_feature_sets.empty
+        else pd.DataFrame()
+    )
+    key = (SPX_CROSS_ASSET_RESCUE_CANDIDATE, SPX_CROSS_ASSET_RESCUE_MODEL)
+    summary_row = lookup.loc[key] if isinstance(lookup, pd.DataFrame) and key in lookup.index else pd.Series(dtype=object)
+    predictions, _, _, _ = _candidate_predictions_and_summaries(
+        run_id,
+        raw,
+        feature_result,
+        SPX_CROSS_ASSET_RESCUE_CANDIDATE,
+        candidate_cols,
+        config,
+        quick=quick,
+        model_names_override=[SPX_CROSS_ASSET_RESCUE_MODEL],
+    )
+    preds = predictions.get(SPX_CROSS_ASSET_RESCUE_MODEL, pd.DataFrame())
+    if preds.empty:
+        return pd.DataFrame(
+            [
+                _spx_cross_asset_empty_row(
+                    run_id,
+                    generated_at,
+                    filter_name,
+                    "unavailable",
+                    "SPX cross-asset candidate predictions are unavailable.",
+                    audit_scope="train_selected_filter",
+                )
+                for filter_name in SPX_CROSS_ASSET_RESCUE_FILTERS
+            ]
+        )
+    masks = _spx_cross_asset_masks(raw, feature_result, pd.DatetimeIndex(preds.index))
+    rows = []
+    for filter_name in SPX_CROSS_ASSET_RESCUE_FILTERS:
+        mask = masks.get(filter_name)
+        if mask is None:
+            rows.append(
+                _spx_cross_asset_empty_row(
+                    run_id,
+                    generated_at,
+                    filter_name,
+                    "unavailable_filter_input",
+                    "Required SPX cross-asset filter input is unavailable; result was not inferred.",
+                    audit_scope="train_selected_filter",
+                )
+            )
+            continue
+        slice_frame = preds.copy()
+        slice_mask = mask.reindex(slice_frame.index).fillna(False).astype(bool)
+        base_position = slice_frame["policy_position"].astype(float) if "policy_position" in slice_frame else pd.Series(0.0, index=slice_frame.index)
+        slice_frame["policy_position"] = np.where(slice_mask, base_position, 0.0)
+        rows.append(
+            _spx_cross_asset_decision_row(
+                run_id,
+                generated_at,
+                preds,
+                slice_frame,
+                summary_row,
+                masks,
+                config,
+                filter_name=filter_name,
+                audit_scope="diagnostic_slice",
+                filter_selection_basis="diagnostic_final_test_slice",
+                selection_window_end="",
+                leakage_ok=False,
+                final_test_ranked=True,
+                quick=quick,
+            )
+        )
+        filtered, selection_end, leakage_ok = _rolling_train_selected_filter_predictions(preds, mask, config)
+        rows.append(
+            _spx_cross_asset_decision_row(
+                run_id,
+                generated_at,
+                preds,
+                filtered,
+                summary_row,
+                masks,
+                config,
+                filter_name=filter_name,
+                audit_scope="train_selected_filter",
+                filter_selection_basis="rolling_train_calibration_only",
+                selection_window_end=selection_end,
+                leakage_ok=leakage_ok,
+                final_test_ranked=False,
+                quick=quick,
+            )
+        )
+    return pd.DataFrame(rows)
+
+
 def btc_dominance_regime_report(run_id: str, raw: pd.DataFrame, feature_result, availability: pd.DataFrame) -> pd.DataFrame:
     asset_id = _asset_id_from_run(run_id)
     if asset_id != "btc":
@@ -6065,6 +6443,14 @@ def write_diagnostics(
     )
     if _asset_id_from_run(run_id) == "spx":
         write_schema_csv("spx_risk_off_audit.csv", spx_risk_off_frame, output_dir)
+    spx_cross_asset_rescue_frame = spx_cross_asset_rescue_audit(
+        run_id,
+        raw,
+        feature_result,
+        config,
+        asset_policy["asset_feature_set_leaderboard.csv"],
+        quick=quick,
+    )
     high_conviction_frame = high_conviction_factor_leaderboard(run_id, asset_policy["asset_feature_set_leaderboard.csv"])
     btc_rescue_audit_frame = btc_candidate_rescue_audit(
         run_id,
@@ -6144,6 +6530,7 @@ def write_diagnostics(
         "factor_pack_promotion_audit.csv": factor_pack_promotion_audit(run_id, high_conviction_frame),
         "btc_candidate_rescue_audit.csv": btc_rescue_audit_frame,
         "btc_regime_filter_audit.csv": btc_regime_filter_frame,
+        "spx_cross_asset_rescue_audit.csv": spx_cross_asset_rescue_frame,
     }
     for filename, frame in diagnostics.items():
         write_diagnostic_csv(filename, frame, output_dir)
@@ -6155,4 +6542,5 @@ def write_diagnostics(
     returned["latest_signal_interpretation.csv"] = latest_interpretation
     returned["sol_deployability_audit.csv"] = sol_deployability_frame
     returned["spx_risk_off_audit.csv"] = spx_risk_off_frame
+    returned["spx_cross_asset_rescue_audit.csv"] = spx_cross_asset_rescue_frame
     return returned

@@ -1,2 +1,2 @@
 run_id,asset_id,source_status,rows,first_date,last_date,missing_pct,latest_daily_net_flow_usd,latest_7d_net_flow_usd,latest_30d_net_flow_usd,latest_ibit_share,used_in_model,failure_reason
-btc_research_20260512T122205Z,btc,worked,600,2024-01-11,2026-05-11,0.7944578313253012,0.0,-659400000.0,4939400000.0,0.0,False,
+btc_research_20260529T094658Z,btc,worked,600,2024-01-11,2026-05-11,0.7912167026637869,0.0,0.0,2253100000.0,0.0,False,

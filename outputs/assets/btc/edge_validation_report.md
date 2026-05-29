@@ -1,7 +1,7 @@
 # SOL Edge Validation + BTC No-Edge Drilldown
 
 ## Run Summary
-- Run ID: `btc_research_20260512T122205Z`
+- Run ID: `btc_research_20260529T094658Z`
 - Asset: `BTC`
 - Selected model: `no_valid_edge`
 - Signal: `neutral`
